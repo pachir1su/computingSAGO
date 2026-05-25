@@ -12,7 +12,7 @@
 ## 프로젝트 소개
 
 매일 아침 날씨 앱, 뉴스 앱, 미세먼지 앱을 따로따로 확인해야 하는 불편함에서 시작했습니다.  
-**데일리 리포트 AI**는 이 모든 정보를 자동으로 수집하고, Gemini AI가 자연어 리포트로 종합하여 Discord 개인 DM으로 자동 발송합니다.  
+**데일리 리포트 AI**는 이 모든 정보를 자동으로 수집하고 Gemini AI가 자연어 리포트로 종합하여 Discord 개인 DM으로 자동 발송합니다.  
 사용자는 아무것도 하지 않아도 매일 아침 브리핑을 받을 수 있습니다.
 
 ---
@@ -50,7 +50,7 @@
 ### 1. 저장소 클론
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/computingSAGO.git
+git clone https://github.com/pachir1su/computingSAGO.git
 cd computingSAGO
 ```
 
