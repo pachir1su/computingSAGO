@@ -111,27 +111,34 @@ async def cmd_ask(interaction: discord.Interaction, 내용: str):
         await interaction.followup.send(f"⚠️ 질문 처리 실패\n```\n{e}\n```")
 
 
-@bot.tree.command(name="설정", description="브리핑 시간 또는 지역을 변경합니다")
-@app_commands.describe(항목="변경할 항목 (시간 또는 지역)", 값="설정할 값 (예: 08:00 또는 Busan)")
-async def cmd_settings(interaction: discord.Interaction, 항목: str, 값: str):
-    # 사용자 설정 변경 후 config.json에 즉시 저장
+# 설정 서브커맨드 그룹 — /설정 시간, /설정 지역으로 분리해 직관성 향상
+settingsGroup = app_commands.Group(name="설정", description="봇 설정 변경")
+
+
+@settingsGroup.command(name="시간", description="자동 브리핑 시간을 변경합니다")
+@app_commands.describe(시간="HH:MM 형식으로 입력 (예: 08:30)")
+async def cmd_set_time(interaction: discord.Interaction, 시간: str):
+    # 브리핑 시간 유효성 검사 후 저장
     config = load_config()
-
-    if 항목 == "시간":
-        try:
-            hh, mm = 값.split(":")
-            if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
-                raise ValueError
-            config["briefing_time"] = 값
-            save_config(config)
-            await interaction.response.send_message(f"✅ 브리핑 시간이 **{값}**으로 변경되었습니다.")
-        except ValueError:
-            await interaction.response.send_message("❌ 올바른 시간 형식을 입력해주세요. 예: `08:30`")
-
-    elif 항목 == "지역":
-        config["region"] = 값
+    try:
+        hh, mm = 시간.split(":")
+        if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
+            raise ValueError
+        config["briefing_time"] = 시간
         save_config(config)
-        await interaction.response.send_message(f"✅ 날씨 조회 지역이 **{값}**으로 변경되었습니다.")
+        await interaction.response.send_message(f"✅ 브리핑 시간이 **{시간}**으로 변경되었습니다.")
+    except ValueError:
+        await interaction.response.send_message("❌ 올바른 형식으로 입력해주세요. 예: `08:30`")
 
-    else:
-        await interaction.response.send_message("❌ 알 수 없는 항목입니다. `시간` 또는 `지역`을 입력해주세요.")
+
+@settingsGroup.command(name="지역", description="날씨 조회 지역을 변경합니다")
+@app_commands.describe(지역="영문 도시명 (예: Seoul, Busan, Incheon, Daejeon, Cheonan)")
+async def cmd_set_region(interaction: discord.Interaction, 지역: str):
+    # 날씨 지역 변경 및 저장
+    config = load_config()
+    config["region"] = 지역
+    save_config(config)
+    await interaction.response.send_message(f"✅ 날씨 조회 지역이 **{지역}**으로 변경되었습니다.")
+
+
+bot.tree.add_command(settingsGroup)
