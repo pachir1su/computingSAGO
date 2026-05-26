@@ -8,7 +8,7 @@ load_dotenv()
 
 # Gemini 모델 초기화
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-geminiModel = genai.GenerativeModel("gemini-1.5-flash")
+geminiModel = genai.GenerativeModel("gemini-2.5-flash")
 
 
 def _ask(prompt: str) -> str:
