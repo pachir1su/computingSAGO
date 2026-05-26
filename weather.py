@@ -15,11 +15,25 @@ aqiLabels  = {1: "좋음 😊", 2: "보통 😐", 3: "보통 😐", 4: "나쁨 �
 _weatherCache = {}
 _cacheTtl = 600
 
+# 시작 시 API 키 로드 상태 출력
+if apiKey:
+    maskedKey = apiKey[:4] + "*" * (len(apiKey) - 8) + apiKey[-4:]
+    print(f"[날씨] API 키 로드됨: {maskedKey}  (총 {len(apiKey)}자)")
+else:
+    print("[날씨] ❌ OPENWEATHER_API_KEY가 .env에 없습니다!")
+
 
 def _request(url: str, params: dict) -> dict:
-    # HTTP GET 공통 처리 — 상태 코드별 명확한 오류 안내
+    # HTTP GET 공통 처리 — 요청/응답 전체를 터미널에 출력
+    maskedParams = {k: (v[:4] + "****" if k == "appid" else v) for k, v in params.items()}
+    print(f"[날씨] GET {url}")
+    print(f"[날씨] 파라미터: {maskedParams}")
+
     try:
         resp = requests.get(url, params=params, timeout=10)
+        print(f"[날씨] 응답 코드: {resp.status_code}")
+        print(f"[날씨] 응답 본문: {resp.text[:300]}")
+
         if resp.status_code == 401:
             raise ValueError(
                 "OpenWeatherMap API 키가 유효하지 않습니다.\n"
@@ -46,6 +60,7 @@ def get_weather(city: str = "Seoul") -> dict:
     if cacheKey in _weatherCache:
         cachedData, cachedAt = _weatherCache[cacheKey]
         if now - cachedAt < _cacheTtl:
+            print(f"[날씨] 캐시 반환 ({city})")
             return cachedData
 
     # 도시명으로 날씨 직접 조회 — 응답에 좌표 포함
