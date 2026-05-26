@@ -1,0 +1,6 @@
+discord.py>=2.3.0
+google-generativeai>=0.3.0
+schedule>=1.2.0
+requests>=2.31.0
+feedparser>=6.0.0
+python-dotenv>=1.0.0
