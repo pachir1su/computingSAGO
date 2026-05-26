@@ -15,47 +15,14 @@ aqiLabels  = {1: "좋음 😊", 2: "보통 😐", 3: "보통 😐", 4: "나쁨 �
 _weatherCache = {}
 _cacheTtl = 600
 
-# ── 시작 시 API 키 진단 ───────────────────────────────────────────
 if not apiKey:
     print("[날씨] ❌ OPENWEATHER_API_KEY가 .env에 없습니다!")
-else:
-    maskedKey = apiKey[:4] + "*" * (len(apiKey) - 8) + apiKey[-4:]
-    print(f"[날씨] API 키: {maskedKey} (총 {len(apiKey)}자)")
-
-    # 공백·특수문자 포함 여부 확인
-    badChars = [c for c in apiKey if not c.isalnum()]
-    if badChars:
-        print(f"[날씨] ⚠️  키에 이상한 문자 포함: {badChars}  ← .env 따옴표 등 확인 필요")
-
-    # 실제 API 호출 테스트
-    print("[날씨] API 연결 테스트 중...")
-    try:
-        testResp = requests.get(
-            weatherUrl,
-            params={"q": "Seoul", "appid": apiKey, "units": "metric"},
-            timeout=10,
-        )
-        if testResp.status_code == 200:
-            print("[날씨] ✅ API 연결 성공!")
-        else:
-            print(f"[날씨] ❌ 테스트 실패 — 코드: {testResp.status_code}")
-            print(f"[날씨] 응답: {testResp.text}")
-    except Exception as testErr:
-        print(f"[날씨] ❌ 네트워크 오류: {testErr}")
-# ─────────────────────────────────────────────────────────────────
 
 
 def _request(url: str, params: dict) -> dict:
-    # HTTP GET 공통 처리 — 요청/응답 전체를 터미널에 출력
-    maskedParams = {k: (v[:4] + "****" if k == "appid" else v) for k, v in params.items()}
-    print(f"[날씨] GET {url}")
-    print(f"[날씨] 파라미터: {maskedParams}")
-
+    # HTTP GET 공통 처리 — 상태 코드별 명확한 오류 안내
     try:
         resp = requests.get(url, params=params, timeout=10)
-        print(f"[날씨] 응답 코드: {resp.status_code}")
-        print(f"[날씨] 응답 본문: {resp.text[:300]}")
-
         if resp.status_code == 401:
             raise ValueError(
                 "OpenWeatherMap API 키가 유효하지 않습니다.\n"
@@ -82,7 +49,6 @@ def get_weather(city: str = "Seoul") -> dict:
     if cacheKey in _weatherCache:
         cachedData, cachedAt = _weatherCache[cacheKey]
         if now - cachedAt < _cacheTtl:
-            print(f"[날씨] 캐시 반환 ({city})")
             return cachedData
 
     # 도시명으로 날씨 직접 조회 — 응답에 좌표 포함
