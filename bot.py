@@ -4,6 +4,7 @@ import discord
 from discord import app_commands
 from dotenv import load_dotenv
 from report import generate_report, generate_weather_summary, generate_news_summary, ask_gemini
+from weather import check_weather_alerts
 
 load_dotenv()
 
@@ -12,14 +13,26 @@ configFile = "config.json"
 
 
 def load_config() -> dict:
-    # config.json 로드 — 파일 없거나 손상 시 기본값 반환
+    # config.json 로드 — 없거나 손상 시 기본값 반환, 구버전 형식 자동 마이그레이션
+    default = {"briefing_time": "07:00", "users": {}}
     try:
-        if os.path.exists(configFile):
-            with open(configFile, "r", encoding="utf-8") as f:
-                return json.load(f)
+        if not os.path.exists(configFile):
+            return default
+        with open(configFile, "r", encoding="utf-8") as f:
+            config = json.load(f)
+
+        # 구버전 (user_id + region 전역) → 신버전 (users 딕셔너리) 마이그레이션
+        oldUserId = config.pop("user_id", None)
+        oldRegion = config.pop("region", "Seoul")
+        if oldUserId:
+            config.setdefault("users", {})
+            config["users"].setdefault(str(oldUserId), {"region": oldRegion})
+            save_config(config)
+
+        config.setdefault("users", {})
+        return config
     except (json.JSONDecodeError, IOError):
-        pass
-    return {"briefing_time": "07:00", "region": "Seoul", "user_id": None}
+        return default
 
 
 def save_config(config: dict):
@@ -42,47 +55,102 @@ class DailyReportBot(discord.Client):
         print(f"[봇 준비 완료] {self.user} 로그인됨")
 
     async def send_daily_report(self):
-        # 설정된 사용자에게 DM으로 데일리 브리핑 자동 발송
+        # 등록된 모든 사용자에게 각자 지역 기준으로 DM 브리핑 발송
         config = load_config()
-        userId = config.get("user_id") or int(os.getenv("DISCORD_USER_ID", 0))
-        if not userId:
-            print("[오류] DISCORD_USER_ID가 설정되지 않았습니다. .env 파일을 확인하세요.")
+        users  = config.get("users", {})
+        if not users:
+            print("[브리핑] 등록된 사용자가 없습니다. /등록을 먼저 실행하세요.")
             return
 
-        try:
-            targetUser = await self.fetch_user(userId)
-            region     = config.get("region", "Seoul")
-            report     = generate_report(region)
-            await targetUser.send(f"📋 **데일리 브리핑**\n\n{report}")
-            print(f"[브리핑 발송 완료] → {targetUser}")
-        except discord.NotFound:
-            print(f"[오류] User ID {userId}를 찾을 수 없습니다.")
-        except Exception as e:
-            print(f"[오류] 브리핑 발송 실패: {e}")
+        for userId, userConfig in users.items():
+            region = userConfig.get("region", "Seoul")
+            try:
+                targetUser = await self.fetch_user(int(userId))
+                report     = generate_report(region)
+                await targetUser.send(f"📋 **데일리 브리핑**\n\n{report}")
+                print(f"[브리핑] 발송 완료 → {targetUser} ({region})")
+            except discord.NotFound:
+                print(f"[브리핑] 사용자 {userId}를 찾을 수 없음")
+            except Exception as e:
+                print(f"[브리핑] 사용자 {userId} 발송 실패: {e}")
+
+    async def send_alerts(self):
+        # 비·미세먼지 조건 확인 후 조건 충족 사용자에게만 경보 DM 발송
+        config = load_config()
+        users  = config.get("users", {})
+
+        for userId, userConfig in users.items():
+            region = userConfig.get("region", "Seoul")
+            try:
+                alerts = check_weather_alerts(region)
+                if not alerts:
+                    continue
+                targetUser = await self.fetch_user(int(userId))
+                alertMsg   = "⚠️ **날씨 주의 알림**\n\n" + "\n".join(alerts)
+                await targetUser.send(alertMsg)
+                print(f"[알림] 발송 완료 → {targetUser} ({region})")
+            except discord.NotFound:
+                print(f"[알림] 사용자 {userId}를 찾을 수 없음")
+            except Exception as e:
+                print(f"[알림] 사용자 {userId} 알림 실패: {e}")
 
 
 bot = DailyReportBot()
+
+
+@bot.tree.command(name="등록", description="데일리 브리핑을 구독합니다")
+@app_commands.describe(지역="날씨 조회 지역 영문 도시명 (예: Seoul, Busan, Cheonan)")
+async def cmd_register(interaction: discord.Interaction, 지역: str = "Seoul"):
+    # 사용자 ID와 지역을 config.json에 저장
+    config = load_config()
+    userId = str(interaction.user.id)
+    config["users"][userId] = {"region": 지역}
+    save_config(config)
+
+    briefingTime = config.get("briefing_time", "07:00")
+    await interaction.response.send_message(
+        f"✅ **등록 완료!** 매일 **{briefingTime}**에 **{지역}** 날씨 기준 브리핑을 DM으로 받습니다.\n"
+        f"지역 변경: `/설정 지역`, 시간 변경: `/설정 시간`, 구독 취소: `/탈퇴`",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="탈퇴", description="데일리 브리핑 구독을 취소합니다")
+async def cmd_unregister(interaction: discord.Interaction):
+    # config.json에서 사용자 항목 삭제
+    config = load_config()
+    userId = str(interaction.user.id)
+    if userId in config.get("users", {}):
+        del config["users"][userId]
+        save_config(config)
+        await interaction.response.send_message("✅ 구독이 취소되었습니다.", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ 등록된 정보가 없습니다. 먼저 `/등록`을 실행해주세요.", ephemeral=True)
 
 
 @bot.tree.command(name="리포트", description="즉시 데일리 리포트를 생성합니다")
 async def cmd_report(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
-        # 현재 설정 지역으로 전체 리포트 생성
+        # 호출한 사용자의 등록 지역 사용 (미등록 시 Seoul)
         config = load_config()
-        report = generate_report(config.get("region", "Seoul"))
+        userId = str(interaction.user.id)
+        region = config.get("users", {}).get(userId, {}).get("region", "Seoul")
+        report = generate_report(region)
         await interaction.followup.send(f"📋 **데일리 브리핑**\n\n{report}")
     except Exception as e:
         await interaction.followup.send(f"⚠️ 리포트 생성 실패\n```\n{e}\n```")
 
 
-@bot.tree.command(name="날씨", description="현재 날씨를 조회합니다")
+@bot.tree.command(name="날씨", description="현재 날씨와 내일 예보를 조회합니다")
 async def cmd_weather(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
-        # 설정된 지역의 날씨 단독 조회
+        # 호출한 사용자의 등록 지역 사용 (미등록 시 Seoul)
         config = load_config()
-        result = generate_weather_summary(config.get("region", "Seoul"))
+        userId = str(interaction.user.id)
+        region = config.get("users", {}).get(userId, {}).get("region", "Seoul")
+        result = generate_weather_summary(region)
         await interaction.followup.send(result)
     except Exception as e:
         await interaction.followup.send(f"⚠️ 날씨 조회 실패\n```\n{e}\n```")
@@ -92,7 +160,6 @@ async def cmd_weather(interaction: discord.Interaction):
 async def cmd_news(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
-        # RSS 파싱 후 Gemini 요약
         result = generate_news_summary()
         await interaction.followup.send(result)
     except Exception as e:
@@ -104,21 +171,20 @@ async def cmd_news(interaction: discord.Interaction):
 async def cmd_ask(interaction: discord.Interaction, 내용: str):
     await interaction.response.defer()
     try:
-        # 사용자 질문을 Gemini에 전달하고 답변 반환
         result = ask_gemini(내용)
         await interaction.followup.send(f"💬 **Gemini 답변**\n\n{result}")
     except Exception as e:
         await interaction.followup.send(f"⚠️ 질문 처리 실패\n```\n{e}\n```")
 
 
-# 설정 서브커맨드 그룹 — /설정 시간, /설정 지역으로 분리해 직관성 향상
+# 설정 서브커맨드 그룹 — /설정 시간, /설정 지역으로 분리
 settingsGroup = app_commands.Group(name="설정", description="봇 설정 변경")
 
 
-@settingsGroup.command(name="시간", description="자동 브리핑 시간을 변경합니다")
+@settingsGroup.command(name="시간", description="자동 브리핑 시간을 변경합니다 (전체 공통)")
 @app_commands.describe(시간="HH:MM 형식으로 입력 (예: 08:30)")
 async def cmd_set_time(interaction: discord.Interaction, 시간: str):
-    # 브리핑 시간 유효성 검사 후 저장
+    # 브리핑 시간 유효성 검사 후 전역 저장
     config = load_config()
     try:
         hh, mm = 시간.split(":")
@@ -126,19 +192,35 @@ async def cmd_set_time(interaction: discord.Interaction, 시간: str):
             raise ValueError
         config["briefing_time"] = 시간
         save_config(config)
-        await interaction.response.send_message(f"✅ 브리핑 시간이 **{시간}**으로 변경되었습니다.")
+        await interaction.response.send_message(
+            f"✅ 브리핑 시간이 **{시간}**으로 변경되었습니다.\n"
+            f"(날씨 알림은 브리핑 30분 전인 **{_subtract_30min(시간)}**에 발송됩니다.)"
+        )
     except ValueError:
         await interaction.response.send_message("❌ 올바른 형식으로 입력해주세요. 예: `08:30`")
 
 
-@settingsGroup.command(name="지역", description="날씨 조회 지역을 변경합니다")
-@app_commands.describe(지역="영문 도시명 (예: Seoul, Busan, Incheon, Daejeon, Cheonan)")
+@settingsGroup.command(name="지역", description="내 날씨 조회 지역을 변경합니다")
+@app_commands.describe(지역="영문 도시명 (예: Seoul, Busan, Incheon, Cheonan, Daejeon)")
 async def cmd_set_region(interaction: discord.Interaction, 지역: str):
-    # 날씨 지역 변경 및 저장
+    # 호출한 사용자의 지역만 개별 변경
     config = load_config()
-    config["region"] = 지역
+    userId = str(interaction.user.id)
+    if userId not in config.get("users", {}):
+        await interaction.response.send_message("❌ 먼저 `/등록`을 실행해주세요.")
+        return
+    config["users"][userId]["region"] = 지역
     save_config(config)
-    await interaction.response.send_message(f"✅ 날씨 조회 지역이 **{지역}**으로 변경되었습니다.")
+    await interaction.response.send_message(f"✅ {interaction.user.mention}의 날씨 지역이 **{지역}**으로 변경되었습니다.")
 
 
 bot.tree.add_command(settingsGroup)
+
+
+def _subtract_30min(timeStr: str) -> str:
+    # 브리핑 시간에서 30분 뺀 알림 시간 계산
+    h, m    = map(int, timeStr.split(":"))
+    total   = h * 60 + m - 30
+    if total < 0:
+        total += 24 * 60
+    return f"{total // 60:02d}:{total % 60:02d}"
