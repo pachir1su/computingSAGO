@@ -1,3 +1,33 @@
+import sys
+
+# 필수 패키지 사전 검사 — 미설치 시 설치 명령어 안내 후 종료
+_REQUIRED = {
+    "discord":        "discord.py",
+    "google.generativeai": "google-generativeai",
+    "schedule":       "schedule",
+    "requests":       "requests",
+    "feedparser":     "feedparser",
+    "dotenv":         "python-dotenv",
+}
+_missing = []
+for _module, _pkg in _REQUIRED.items():
+    try:
+        __import__(_module)
+    except ImportError:
+        _missing.append(_pkg)
+
+if _missing:
+    print("=" * 50)
+    print("❌ 아래 패키지가 설치되지 않았습니다:")
+    for _pkg in _missing:
+        print(f"   - {_pkg}")
+    print("\n다음 명령어를 실행해 설치하세요:")
+    print(f"   pip install {' '.join(_missing)}")
+    print("\n또는 한 번에 전체 설치:")
+    print("   pip install -r requirements.txt")
+    print("=" * 50)
+    sys.exit(1)
+
 import asyncio
 import os
 import threading
