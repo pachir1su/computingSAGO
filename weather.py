@@ -1,18 +1,21 @@
 import os
 import time
 import requests
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # .env에서 키 로드 — 앞뒤 공백·따옴표 제거 (복붙 실수 방지)
-apiKey     = (os.getenv("OPENWEATHER_API_KEY") or "").strip().strip('"').strip("'")
-weatherUrl = "https://api.openweathermap.org/data/2.5/weather"
-airUrl     = "https://api.openweathermap.org/data/2.5/air_pollution"
-aqiLabels  = {1: "좋음 😊", 2: "보통 😐", 3: "보통 😐", 4: "나쁨 😷", 5: "매우 나쁨 🤢"}
+apiKey      = (os.getenv("OPENWEATHER_API_KEY") or "").strip().strip('"').strip("'")
+weatherUrl  = "https://api.openweathermap.org/data/2.5/weather"
+forecastUrl = "https://api.openweathermap.org/data/2.5/forecast"
+airUrl      = "https://api.openweathermap.org/data/2.5/air_pollution"
+aqiLabels   = {1: "좋음 😊", 2: "보통 😐", 3: "보통 😐", 4: "나쁨 😷", 5: "매우 나쁨 🤢"}
 
-# 날씨 캐시 (10분 유효 — API 호출 횟수 절약)
-_weatherCache = {}
+# 날씨·예보 캐시 (10분 유효)
+_weatherCache  = {}
+_forecastCache = {}
 _cacheTtl = 600
 
 if not apiKey:
@@ -32,7 +35,7 @@ def _request(url: str, params: dict) -> dict:
         if resp.status_code == 404:
             raise ValueError(
                 "도시를 찾을 수 없습니다.\n"
-                "영문 도시명을 사용해보세요. (예: Seoul, Busan, Incheon, Daejeon)"
+                "영문 도시명을 사용해보세요. (예: Seoul, Busan, Incheon, Cheonan)"
             )
         resp.raise_for_status()
         return resp.json()
@@ -76,6 +79,63 @@ def get_weather(city: str = "Seoul") -> dict:
         "pm10":        components.get("pm10", 0),
     }
 
-    # 결과 캐시 저장
     _weatherCache[cacheKey] = (result, now)
     return result
+
+
+def get_forecast(city: str = "Seoul") -> dict | None:
+    # 내일 날씨 예보 조회 (OpenWeatherMap 5일 예보 API)
+    cacheKey = city.lower()
+    now = time.time()
+    if cacheKey in _forecastCache:
+        cachedData, cachedAt = _forecastCache[cacheKey]
+        if now - cachedAt < _cacheTtl:
+            return cachedData
+
+    try:
+        data = _request(forecastUrl, {
+            "q": city, "appid": apiKey, "units": "metric", "lang": "kr", "cnt": 16
+        })
+    except Exception:
+        return None
+
+    # 내일 날짜에 해당하는 예보 항목만 필터링
+    tomorrowDate  = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    tomorrowItems = [item for item in data["list"] if item["dt_txt"].startswith(tomorrowDate)]
+    if not tomorrowItems:
+        return None
+
+    temps       = [item["main"]["temp"] for item in tomorrowItems]
+    rainWeather = {"Rain", "Drizzle", "Thunderstorm"}
+    rainExpected = any(item["weather"][0]["main"] in rainWeather for item in tomorrowItems)
+    midItem      = tomorrowItems[len(tomorrowItems) // 2]
+
+    result = {
+        "minTemp":     round(min(temps)),
+        "maxTemp":     round(max(temps)),
+        "description": midItem["weather"][0]["description"],
+        "rainExpected": rainExpected,
+    }
+
+    _forecastCache[cacheKey] = (result, now)
+    return result
+
+
+def check_weather_alerts(city: str = "Seoul") -> list:
+    # 미세먼지·강수 조건 확인 — 조건 충족 시 경보 문자열 반환
+    alerts = []
+    try:
+        w = get_weather(city)
+        if w["aqi"] >= 4:
+            alerts.append(f"💨 미세먼지 **{w['aqiLabel']}** — 외출 시 마스크를 꼭 착용하세요!")
+    except Exception:
+        pass
+
+    try:
+        forecast = get_forecast(city)
+        if forecast and forecast["rainExpected"]:
+            alerts.append("☔ 오늘 **비 예보**가 있습니다. 우산을 챙기세요!")
+    except Exception:
+        pass
+
+    return alerts
