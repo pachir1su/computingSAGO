@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# OpenWeatherMap API 엔드포인트 (Geocoding API 미사용 — 도시명 직접 호출)
-apiKey     = os.getenv("OPENWEATHER_API_KEY")
+# .env에서 키 로드 — 앞뒤 공백·따옴표 제거 (복붙 실수 방지)
+apiKey     = (os.getenv("OPENWEATHER_API_KEY") or "").strip().strip('"').strip("'")
 weatherUrl = "https://api.openweathermap.org/data/2.5/weather"
 airUrl     = "https://api.openweathermap.org/data/2.5/air_pollution"
 aqiLabels  = {1: "좋음 😊", 2: "보통 😐", 3: "보통 😐", 4: "나쁨 😷", 5: "매우 나쁨 🤢"}
@@ -15,12 +15,34 @@ aqiLabels  = {1: "좋음 😊", 2: "보통 😐", 3: "보통 😐", 4: "나쁨 �
 _weatherCache = {}
 _cacheTtl = 600
 
-# 시작 시 API 키 로드 상태 출력
-if apiKey:
-    maskedKey = apiKey[:4] + "*" * (len(apiKey) - 8) + apiKey[-4:]
-    print(f"[날씨] API 키 로드됨: {maskedKey}  (총 {len(apiKey)}자)")
-else:
+# ── 시작 시 API 키 진단 ───────────────────────────────────────────
+if not apiKey:
     print("[날씨] ❌ OPENWEATHER_API_KEY가 .env에 없습니다!")
+else:
+    maskedKey = apiKey[:4] + "*" * (len(apiKey) - 8) + apiKey[-4:]
+    print(f"[날씨] API 키: {maskedKey} (총 {len(apiKey)}자)")
+
+    # 공백·특수문자 포함 여부 확인
+    badChars = [c for c in apiKey if not c.isalnum()]
+    if badChars:
+        print(f"[날씨] ⚠️  키에 이상한 문자 포함: {badChars}  ← .env 따옴표 등 확인 필요")
+
+    # 실제 API 호출 테스트
+    print("[날씨] API 연결 테스트 중...")
+    try:
+        testResp = requests.get(
+            weatherUrl,
+            params={"q": "Seoul", "appid": apiKey, "units": "metric"},
+            timeout=10,
+        )
+        if testResp.status_code == 200:
+            print("[날씨] ✅ API 연결 성공!")
+        else:
+            print(f"[날씨] ❌ 테스트 실패 — 코드: {testResp.status_code}")
+            print(f"[날씨] 응답: {testResp.text}")
+    except Exception as testErr:
+        print(f"[날씨] ❌ 네트워크 오류: {testErr}")
+# ─────────────────────────────────────────────────────────────────
 
 
 def _request(url: str, params: dict) -> dict:
