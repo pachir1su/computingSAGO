@@ -7,16 +7,19 @@ from news import get_top_news
 load_dotenv()
 
 # Gemini 클라이언트 초기화
+# gemini-2.5-flash는 무료 티어 일일 20회 한도 → gemini-2.0-flash (1500회/일)로 변경
 _client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-_MODEL  = "gemini-2.5-flash"
+_MODEL  = "gemini-2.0-flash"
 
 
 def _ask(prompt: str) -> str:
-    # Gemini에 프롬프트 전송 (google.genai가 내부적으로 재시도 처리)
     try:
         response = _client.models.generate_content(model=_MODEL, contents=prompt)
         return response.text
     except Exception as e:
+        errMsg = str(e)
+        if "429" in errMsg or "RESOURCE_EXHAUSTED" in errMsg:
+            raise RuntimeError("Gemini API 일일 사용 한도를 초과했습니다. 내일 다시 이용해주세요.")
         raise RuntimeError(f"Gemini AI 오류: {e}")
 
 
