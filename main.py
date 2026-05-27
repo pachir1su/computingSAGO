@@ -1,4 +1,8 @@
 import sys
+import logging
+
+# discord INFO 로그가 stderr로 출력되어 Thonny에서 빨간색으로 보이는 현상 방지
+logging.getLogger("discord").setLevel(logging.WARNING)
 
 # 필수 패키지 사전 검사 — 미설치 시 설치 명령어 안내 후 종료
 _REQUIRED = {
