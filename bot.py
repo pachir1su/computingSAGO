@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import discord
@@ -126,7 +127,7 @@ class DailyReportBot(discord.Client):
             region = userConfig.get("region", "Seoul")
             try:
                 targetUser = await self.fetch_user(int(userId))
-                report     = generate_report(region)
+                report     = await asyncio.to_thread(generate_report, region)
                 await targetUser.send(f"📋 **데일리 브리핑**\n\n{report}")
                 print(f"[브리핑] 발송 완료 → {targetUser} ({region})")
             except discord.NotFound:
@@ -142,7 +143,7 @@ class DailyReportBot(discord.Client):
         for userId, userConfig in users.items():
             region = userConfig.get("region", "Seoul")
             try:
-                alerts = check_weather_alerts(region)
+                alerts = await asyncio.to_thread(check_weather_alerts, region)
                 if not alerts:
                     continue
                 targetUser = await self.fetch_user(int(userId))
@@ -189,7 +190,7 @@ async def cmd_report(interaction: discord.Interaction):
         config = load_config()
         userId = str(interaction.user.id)
         region = config.get("users", {}).get(userId, {}).get("region", "Seoul")
-        report = generate_report(region)
+        report = await asyncio.to_thread(generate_report, region)
         await interaction.followup.send(f"📋 **데일리 브리핑**\n\n{report}")
     except Exception as e:
         await interaction.followup.send(f"⚠️ 리포트 생성 실패\n```\n{e}\n```")
@@ -203,7 +204,7 @@ async def cmd_weather(interaction: discord.Interaction):
         config = load_config()
         userId = str(interaction.user.id)
         region = config.get("users", {}).get(userId, {}).get("region", "Seoul")
-        result = generate_weather_summary(region)
+        result = await asyncio.to_thread(generate_weather_summary, region)
         await interaction.followup.send(result)
     except Exception as e:
         await interaction.followup.send(f"⚠️ 날씨 조회 실패\n```\n{e}\n```")
@@ -213,7 +214,7 @@ async def cmd_weather(interaction: discord.Interaction):
 async def cmd_news(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
-        result = generate_news_summary()
+        result = await asyncio.to_thread(generate_news_summary)
         await interaction.followup.send(result)
     except Exception as e:
         await interaction.followup.send(f"⚠️ 뉴스 조회 실패\n```\n{e}\n```")
@@ -224,7 +225,7 @@ async def cmd_news(interaction: discord.Interaction):
 async def cmd_ask(interaction: discord.Interaction, 내용: str):
     await interaction.response.defer()
     try:
-        result = ask_gemini(내용)
+        result = await asyncio.to_thread(ask_gemini, 내용)
         await interaction.followup.send(f"💬 **Gemini 답변**\n\n{result}")
     except Exception as e:
         await interaction.followup.send(f"⚠️ 질문 처리 실패\n```\n{e}\n```")
