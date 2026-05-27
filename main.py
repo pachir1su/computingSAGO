@@ -3,7 +3,7 @@ import sys
 # 필수 패키지 사전 검사 — 미설치 시 설치 명령어 안내 후 종료
 _REQUIRED = {
     "discord":        "discord.py",
-    "google.generativeai": "google-generativeai",
+    "google.genai": "google-genai",
     "schedule":       "schedule",
     "requests":       "requests",
     "feedparser":     "feedparser",

@@ -11,6 +11,66 @@ load_dotenv()
 # 설정 파일 경로
 configFile = "config.json"
 
+# 지역 선택 버튼 목록 (표시 이름, OpenWeather 영문 도시명)
+REGIONS = [
+    ("서울", "Seoul"),
+    ("부산", "Busan"),
+    ("인천", "Incheon"),
+    ("대전", "Daejeon"),
+    ("대구", "Daegu"),
+    ("광주", "Gwangju"),
+    ("울산", "Ulsan"),
+    ("수원", "Suwon"),
+    ("천안", "Cheonan"),
+]
+
+
+class RegionButton(discord.ui.Button):
+    def __init__(self, korName: str, engName: str, action: str):
+        super().__init__(label=korName, style=discord.ButtonStyle.primary)
+        self.engName = engName
+        self.action  = action
+
+    async def callback(self, interaction: discord.Interaction):
+        config = load_config()
+        userId = str(interaction.user.id)
+
+        if self.action == "register":
+            config["users"][userId] = {"region": self.engName}
+            save_config(config)
+            briefingTime = config.get("briefing_time", "07:00")
+            await interaction.response.edit_message(
+                content=(
+                    f"✅ **등록 완료!** 매일 **{briefingTime}**에 **{self.engName}** 날씨 기준 브리핑을 DM으로 받습니다.\n"
+                    f"지역 변경: `/설정 지역`, 시간 변경: `/설정 시간`, 구독 취소: `/탈퇴`"
+                ),
+                view=None,
+            )
+        elif self.action == "change":
+            if userId not in config.get("users", {}):
+                await interaction.response.edit_message(
+                    content="❌ 먼저 `/등록`을 실행해주세요.", view=None
+                )
+                return
+            config["users"][userId]["region"] = self.engName
+            save_config(config)
+            await interaction.response.edit_message(
+                content=f"✅ {interaction.user.mention}의 날씨 지역이 **{self.engName}**으로 변경되었습니다.",
+                view=None,
+            )
+
+
+class RegionView(discord.ui.View):
+    def __init__(self, action: str):
+        super().__init__(timeout=60)
+        for korName, engName in REGIONS:
+            self.add_item(RegionButton(korName, engName, action))
+
+    async def on_timeout(self):
+        # 60초 후 버튼 비활성화
+        for item in self.children:
+            item.disabled = True
+
 
 def load_config() -> dict:
     # config.json 로드 — 없거나 손상 시 기본값 반환, 구버전 형식 자동 마이그레이션
@@ -99,18 +159,11 @@ bot = DailyReportBot()
 
 
 @bot.tree.command(name="등록", description="데일리 브리핑을 구독합니다")
-@app_commands.describe(지역="날씨 조회 지역 영문 도시명 (예: Seoul, Busan, Cheonan)")
-async def cmd_register(interaction: discord.Interaction, 지역: str = "Seoul"):
-    # 사용자 ID와 지역을 config.json에 저장
-    config = load_config()
-    userId = str(interaction.user.id)
-    config["users"][userId] = {"region": 지역}
-    save_config(config)
-
-    briefingTime = config.get("briefing_time", "07:00")
+async def cmd_register(interaction: discord.Interaction):
+    view = RegionView(action="register")
     await interaction.response.send_message(
-        f"✅ **등록 완료!** 매일 **{briefingTime}**에 **{지역}** 날씨 기준 브리핑을 DM으로 받습니다.\n"
-        f"지역 변경: `/설정 지역`, 시간 변경: `/설정 시간`, 구독 취소: `/탈퇴`",
+        "📍 **지역을 선택해주세요:**",
+        view=view,
         ephemeral=True,
     )
 
@@ -201,17 +254,18 @@ async def cmd_set_time(interaction: discord.Interaction, 시간: str):
 
 
 @settingsGroup.command(name="지역", description="내 날씨 조회 지역을 변경합니다")
-@app_commands.describe(지역="영문 도시명 (예: Seoul, Busan, Incheon, Cheonan, Daejeon)")
-async def cmd_set_region(interaction: discord.Interaction, 지역: str):
-    # 호출한 사용자의 지역만 개별 변경
+async def cmd_set_region(interaction: discord.Interaction):
     config = load_config()
     userId = str(interaction.user.id)
     if userId not in config.get("users", {}):
-        await interaction.response.send_message("❌ 먼저 `/등록`을 실행해주세요.")
+        await interaction.response.send_message("❌ 먼저 `/등록`을 실행해주세요.", ephemeral=True)
         return
-    config["users"][userId]["region"] = 지역
-    save_config(config)
-    await interaction.response.send_message(f"✅ {interaction.user.mention}의 날씨 지역이 **{지역}**으로 변경되었습니다.")
+    view = RegionView(action="change")
+    await interaction.response.send_message(
+        "📍 **변경할 지역을 선택해주세요:**",
+        view=view,
+        ephemeral=True,
+    )
 
 
 bot.tree.add_command(settingsGroup)

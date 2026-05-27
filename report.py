@@ -1,20 +1,20 @@
 import os
-import google.generativeai as genai
+from google import genai
 from dotenv import load_dotenv
 from weather import get_weather, get_forecast
 from news import get_top_news
 
 load_dotenv()
 
-# Gemini 모델 초기화
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-geminiModel = genai.GenerativeModel("gemini-2.5-flash")
+# Gemini 클라이언트 초기화
+_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+_MODEL  = "gemini-2.5-flash"
 
 
 def _ask(prompt: str) -> str:
     # Gemini에 프롬프트 전송 및 텍스트 응답 반환
     try:
-        response = geminiModel.generate_content(prompt)
+        response = _client.models.generate_content(model=_MODEL, contents=prompt)
         return response.text
     except Exception as e:
         raise RuntimeError(f"Gemini AI 오류: {e}")
