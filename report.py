@@ -1,4 +1,5 @@
 import os
+import time
 from google import genai
 from dotenv import load_dotenv
 from weather import get_weather, get_forecast
@@ -12,12 +13,19 @@ _MODEL  = "gemini-2.5-flash"
 
 
 def _ask(prompt: str) -> str:
-    # Gemini에 프롬프트 전송 및 텍스트 응답 반환
-    try:
-        response = _client.models.generate_content(model=_MODEL, contents=prompt)
-        return response.text
-    except Exception as e:
-        raise RuntimeError(f"Gemini AI 오류: {e}")
+    # Gemini에 프롬프트 전송 — 503/과부하 시 최대 3회 재시도
+    maxRetries = 3
+    for attempt in range(maxRetries):
+        try:
+            response = _client.models.generate_content(model=_MODEL, contents=prompt)
+            return response.text
+        except Exception as e:
+            errMsg = str(e)
+            isRetryable = any(code in errMsg for code in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"))
+            if isRetryable and attempt < maxRetries - 1:
+                time.sleep(2 ** (attempt + 1))  # 2s → 4s
+                continue
+            raise RuntimeError(f"Gemini AI 오류: {e}")
 
 
 def generate_report(city: str = "Seoul") -> str:
