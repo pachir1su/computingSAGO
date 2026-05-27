@@ -115,6 +115,22 @@ class DailyReportBot(discord.Client):
     async def on_ready(self):
         print(f"[봇 준비 완료] {self.user} 로그인됨")
 
+    async def _dm_send(self, user, content: str):
+        # Discord 2000자 제한 — 초과 시 문단 단위로 분할 전송
+        limit = 1900
+        if len(content) <= limit:
+            await user.send(content)
+            return
+        lines, chunk = content.split("\n"), ""
+        for line in lines:
+            if len(chunk) + len(line) + 1 > limit:
+                await user.send(chunk)
+                chunk = line
+            else:
+                chunk = (chunk + "\n" + line) if chunk else line
+        if chunk:
+            await user.send(chunk)
+
     async def send_daily_report(self):
         # 등록된 모든 사용자에게 각자 지역 기준으로 DM 브리핑 발송
         config = load_config()
@@ -128,12 +144,14 @@ class DailyReportBot(discord.Client):
             try:
                 targetUser = await self.fetch_user(int(userId))
                 report     = await asyncio.to_thread(generate_report, region)
-                await targetUser.send(f"📋 **데일리 브리핑**\n\n{report}")
+                await self._dm_send(targetUser, f"📋 **데일리 브리핑**\n\n{report}")
                 print(f"[브리핑] 발송 완료 → {targetUser} ({region})")
             except discord.NotFound:
                 print(f"[브리핑] 사용자 {userId}를 찾을 수 없음")
+            except discord.Forbidden:
+                print(f"[브리핑] 사용자 {userId} DM 거부됨 (DM 설정 확인 필요)")
             except Exception as e:
-                print(f"[브리핑] 사용자 {userId} 발송 실패: {e}")
+                print(f"[브리핑] 사용자 {userId} 발송 실패: {type(e).__name__}: {e}")
 
     async def send_alerts(self):
         # 비·미세먼지 조건 확인 후 조건 충족 사용자에게만 경보 DM 발송
@@ -148,12 +166,14 @@ class DailyReportBot(discord.Client):
                     continue
                 targetUser = await self.fetch_user(int(userId))
                 alertMsg   = "⚠️ **날씨 주의 알림**\n\n" + "\n".join(alerts)
-                await targetUser.send(alertMsg)
+                await self._dm_send(targetUser, alertMsg)
                 print(f"[알림] 발송 완료 → {targetUser} ({region})")
             except discord.NotFound:
                 print(f"[알림] 사용자 {userId}를 찾을 수 없음")
+            except discord.Forbidden:
+                print(f"[알림] 사용자 {userId} DM 거부됨 (DM 설정 확인 필요)")
             except Exception as e:
-                print(f"[알림] 사용자 {userId} 알림 실패: {e}")
+                print(f"[알림] 사용자 {userId} 알림 실패: {type(e).__name__}: {e}")
 
 
 bot = DailyReportBot()
