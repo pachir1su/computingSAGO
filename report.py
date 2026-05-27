@@ -1,4 +1,5 @@
 import os
+import threading
 from google import genai
 from dotenv import load_dotenv
 from weather import get_weather, get_forecast
@@ -6,21 +7,41 @@ from news import get_top_news
 
 load_dotenv()
 
-# Gemini 클라이언트 초기화
-# gemini-2.5-flash는 무료 티어 일일 20회 한도 → gemini-2.0-flash (1500회/일)로 변경
-_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-_MODEL  = "gemini-2.0-flash"
+# 다중 API 키 라운드 로빈 — 키당 20회/일, 3키 = 60회/일
+_API_KEYS = [k for k in [
+    os.getenv("GEMINI_API_KEY"),
+    os.getenv("GEMINI_API_KEY_2"),
+    os.getenv("GEMINI_API_KEY_3"),
+] if k]
+_clients  = [genai.Client(api_key=k) for k in _API_KEYS]
+_MODEL    = "gemini-2.5-flash"
+_keyIndex = 0
+_keyLock  = threading.Lock()
 
 
 def _ask(prompt: str) -> str:
-    try:
-        response = _client.models.generate_content(model=_MODEL, contents=prompt)
-        return response.text
-    except Exception as e:
-        errMsg = str(e)
-        if "429" in errMsg or "RESOURCE_EXHAUSTED" in errMsg:
-            raise RuntimeError("Gemini API 일일 사용 한도를 초과했습니다. 내일 다시 이용해주세요.")
-        raise RuntimeError(f"Gemini AI 오류: {e}")
+    global _keyIndex
+    if not _clients:
+        raise RuntimeError("Gemini API 키가 설정되지 않았습니다. .env 파일을 확인해주세요.")
+
+    # 모든 키를 순회하며 시도, 429 발생 시 다음 키로 전환
+    for _ in range(len(_clients)):
+        with _keyLock:
+            idx = _keyIndex
+        try:
+            response = _clients[idx].models.generate_content(model=_MODEL, contents=prompt)
+            with _keyLock:
+                _keyIndex = (idx + 1) % len(_clients)
+            return response.text
+        except Exception as e:
+            errMsg = str(e)
+            if "429" in errMsg or "RESOURCE_EXHAUSTED" in errMsg:
+                with _keyLock:
+                    _keyIndex = (idx + 1) % len(_clients)
+                continue
+            raise RuntimeError(f"Gemini AI 오류: {e}")
+
+    raise RuntimeError("모든 Gemini API 키의 일일 한도를 초과했습니다. 내일 다시 이용해주세요.")
 
 
 def generate_report(city: str = "Seoul") -> str:
