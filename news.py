@@ -1,8 +1,11 @@
 import time
 import feedparser
+from logger import get_logger
 
 # Google 뉴스 한국어 RSS 피드
 newsRssUrl = "https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko"
+
+logger = get_logger(__name__)
 
 # 뉴스 캐시 (30분 유효 — RSS 폴링 빈도 제한)
 _newsCache = None
@@ -29,4 +32,5 @@ def get_top_news(count: int = 3) -> list:
         return _newsCache[:count]
 
     except Exception as e:
-        raise RuntimeError(f"뉴스 파싱 오류: {e}")
+        logger.error("뉴스 파싱 오류: %s", e, exc_info=True)
+        raise RuntimeError(f"뉴스 파싱 오류: {e}") from e
