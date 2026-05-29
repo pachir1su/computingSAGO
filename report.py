@@ -4,8 +4,11 @@ from google import genai
 from dotenv import load_dotenv
 from weather import get_weather, get_forecast
 from news import get_top_news
+from logger import get_logger
 
 load_dotenv()
+
+logger = get_logger(__name__)
 
 # 다중 API 키 라운드 로빈 — 키당 20회/일, 3키 = 60회/일
 _API_KEYS = [k for k in [
@@ -36,11 +39,13 @@ def _ask(prompt: str) -> str:
         except Exception as e:
             errMsg = str(e)
             if "429" in errMsg or "RESOURCE_EXHAUSTED" in errMsg:
+                logger.warning("Gemini 키 %d 한도 초과, 다음 키로 전환", idx + 1)
                 with _keyLock:
                     _keyIndex = (idx + 1) % len(_clients)
                 continue
             raise RuntimeError(f"Gemini AI 오류: {e}")
 
+    logger.error("모든 Gemini API 키 소진됨 (키 수: %d)", len(_clients))
     raise RuntimeError("모든 Gemini API 키의 일일 한도를 초과했습니다. 내일 다시 이용해주세요.")
 
 

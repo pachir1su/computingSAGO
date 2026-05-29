@@ -6,8 +6,11 @@ from discord import app_commands
 from dotenv import load_dotenv
 from report import generate_report, generate_weather_summary, generate_news_summary, ask_gemini
 from weather import check_weather_alerts
+from logger import get_logger
 
 load_dotenv()
+
+logger = get_logger(__name__)
 
 # 설정 파일 경로
 configFile = "config.json"
@@ -92,14 +95,18 @@ def load_config() -> dict:
 
         config.setdefault("users", {})
         return config
-    except (json.JSONDecodeError, IOError):
+    except (json.JSONDecodeError, IOError) as e:
+        logger.warning("설정 파일 로드 실패, 기본값 사용: %s", e)
         return default
 
 
 def save_config(config: dict):
     # 변경된 설정을 config.json에 즉시 저장
-    with open(configFile, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+    try:
+        with open(configFile, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+    except IOError:
+        logger.error("설정 파일 저장 실패", exc_info=True)
 
 
 class DailyReportBot(discord.Client):
@@ -113,7 +120,7 @@ class DailyReportBot(discord.Client):
         await self.tree.sync()
 
     async def on_ready(self):
-        print(f"[봇 준비 완료] {self.user} 로그인됨")
+        logger.info("봇 준비 완료: %s 로그인됨", self.user)
 
     async def _dm_send(self, user, content: str):
         # Discord 2000자 제한 — 초과 시 문단 단위로 분할 전송
@@ -136,7 +143,7 @@ class DailyReportBot(discord.Client):
         config = load_config()
         users  = config.get("users", {})
         if not users:
-            print("[브리핑] 등록된 사용자가 없습니다. /등록을 먼저 실행하세요.")
+            logger.warning("브리핑: 등록된 사용자가 없습니다. /등록을 먼저 실행하세요.")
             return
 
         for userId, userConfig in users.items():
@@ -145,13 +152,13 @@ class DailyReportBot(discord.Client):
                 targetUser = await self.fetch_user(int(userId))
                 report     = await asyncio.to_thread(generate_report, region)
                 await self._dm_send(targetUser, f"📋 **데일리 브리핑**\n\n{report}")
-                print(f"[브리핑] 발송 완료 → {targetUser} ({region})")
+                logger.info("브리핑 발송 완료 → %s (%s)", targetUser, region)
             except discord.NotFound:
-                print(f"[브리핑] 사용자 {userId}를 찾을 수 없음")
+                logger.warning("브리핑: 사용자 %s를 찾을 수 없음", userId)
             except discord.Forbidden:
-                print(f"[브리핑] 사용자 {userId} DM 거부됨 (DM 설정 확인 필요)")
+                logger.warning("브리핑: 사용자 %s DM 거부됨 (DM 설정 확인 필요)", userId)
             except Exception as e:
-                print(f"[브리핑] 사용자 {userId} 발송 실패: {type(e).__name__}: {e}")
+                logger.error("브리핑: 사용자 %s 발송 실패: %s", userId, e, exc_info=True)
 
     async def send_alerts(self):
         # 비·미세먼지 조건 확인 후 조건 충족 사용자에게만 경보 DM 발송
@@ -167,13 +174,13 @@ class DailyReportBot(discord.Client):
                 targetUser = await self.fetch_user(int(userId))
                 alertMsg   = "⚠️ **날씨 주의 알림**\n\n" + "\n".join(alerts)
                 await self._dm_send(targetUser, alertMsg)
-                print(f"[알림] 발송 완료 → {targetUser} ({region})")
+                logger.info("알림 발송 완료 → %s (%s)", targetUser, region)
             except discord.NotFound:
-                print(f"[알림] 사용자 {userId}를 찾을 수 없음")
+                logger.warning("알림: 사용자 %s를 찾을 수 없음", userId)
             except discord.Forbidden:
-                print(f"[알림] 사용자 {userId} DM 거부됨 (DM 설정 확인 필요)")
+                logger.warning("알림: 사용자 %s DM 거부됨 (DM 설정 확인 필요)", userId)
             except Exception as e:
-                print(f"[알림] 사용자 {userId} 알림 실패: {type(e).__name__}: {e}")
+                logger.error("알림: 사용자 %s 발송 실패: %s", userId, e, exc_info=True)
 
 
 bot = DailyReportBot()
@@ -213,6 +220,7 @@ async def cmd_report(interaction: discord.Interaction):
         report = await asyncio.to_thread(generate_report, region)
         await interaction.followup.send(f"📋 **데일리 브리핑**\n\n{report}")
     except Exception as e:
+        logger.error("/리포트 실패: %s", e, exc_info=True)
         await interaction.followup.send(f"⚠️ 리포트 생성 실패\n```\n{e}\n```")
 
 
@@ -227,6 +235,7 @@ async def cmd_weather(interaction: discord.Interaction):
         result = await asyncio.to_thread(generate_weather_summary, region)
         await interaction.followup.send(result)
     except Exception as e:
+        logger.error("/날씨 실패: %s", e, exc_info=True)
         await interaction.followup.send(f"⚠️ 날씨 조회 실패\n```\n{e}\n```")
 
 
@@ -237,6 +246,7 @@ async def cmd_news(interaction: discord.Interaction):
         result = await asyncio.to_thread(generate_news_summary)
         await interaction.followup.send(result)
     except Exception as e:
+        logger.error("/뉴스 실패: %s", e, exc_info=True)
         await interaction.followup.send(f"⚠️ 뉴스 조회 실패\n```\n{e}\n```")
 
 
@@ -248,6 +258,7 @@ async def cmd_ask(interaction: discord.Interaction, 내용: str):
         result = await asyncio.to_thread(ask_gemini, 내용)
         await interaction.followup.send(f"💬 **Gemini 답변**\n\n{result}")
     except Exception as e:
+        logger.error("/질문 실패: %s", e, exc_info=True)
         await interaction.followup.send(f"⚠️ 질문 처리 실패\n```\n{e}\n```")
 
 
