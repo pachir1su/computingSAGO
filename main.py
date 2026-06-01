@@ -21,7 +21,6 @@ for _module, _pkg in _REQUIRED.items():
         _missing.append(_pkg)
 
 if _missing:
-    # 로거 미설치 가능성 있으므로 이 시점은 print 사용
     print("=" * 50)
     print("❌ 아래 패키지가 설치되지 않았습니다:")
     for _pkg in _missing:
@@ -40,11 +39,8 @@ import time
 
 import schedule
 from dotenv import load_dotenv
-from logger import get_logger
 
 load_dotenv()
-
-logger = get_logger(__name__)
 
 
 def _subtract_30min(timeStr: str) -> str:
@@ -82,7 +78,7 @@ def run_scheduler(bot, loadConfigFn):
 
             schedule.every().day.at(briefingTime).do(trigger_report)
             schedule.every().day.at(alertTime).do(trigger_alert)
-            logger.info("스케줄 등록: 알림 %s / 브리핑 %s", alertTime, briefingTime)
+            print(f"[스케줄러] 알림: {alertTime} / 브리핑: {briefingTime}")
 
         schedule.run_pending()
         time.sleep(60)  # 1분 간격 폴링 (설정 변경 최대 1분 내 반영)
@@ -94,7 +90,7 @@ if __name__ == "__main__":
     # Discord 봇 토큰 유효성 확인
     discordToken = os.getenv("DISCORD_TOKEN")
     if not discordToken:
-        logger.critical(".env 파일에 DISCORD_TOKEN이 없습니다.")
+        print("[오류] .env 파일에 DISCORD_TOKEN을 설정해주세요.")
         raise SystemExit(1)
 
     # 스케줄러를 데몬 스레드로 실행 (봇 종료 시 자동 종료)
