@@ -3,11 +3,8 @@ import time
 import requests
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from logger import get_logger
 
 load_dotenv()
-
-logger = get_logger(__name__)
 
 # .env에서 키 로드 — 앞뒤 공백·따옴표 제거 (복붙 실수 방지)
 apiKey      = (os.getenv("OPENWEATHER_API_KEY") or "").strip().strip('"').strip("'")
@@ -22,7 +19,7 @@ _forecastCache = {}
 _cacheTtl = 600
 
 if not apiKey:
-    logger.error("OPENWEATHER_API_KEY가 .env에 없습니다!")
+    print("[날씨] ❌ OPENWEATHER_API_KEY가 .env에 없습니다!")
 
 
 def _request(url: str, params: dict) -> dict:
@@ -100,7 +97,6 @@ def get_forecast(city: str = "Seoul") -> dict | None:
             "q": city, "appid": apiKey, "units": "metric", "lang": "kr", "cnt": 16
         })
     except Exception:
-        logger.warning("예보 데이터 조회 실패: city=%s", city, exc_info=True)
         return None
 
     # 내일 날짜에 해당하는 예보 항목만 필터링
@@ -133,13 +129,13 @@ def check_weather_alerts(city: str = "Seoul") -> list:
         if w["aqi"] >= 4:
             alerts.append(f"💨 미세먼지 **{w['aqiLabel']}** — 외출 시 마스크를 꼭 착용하세요!")
     except Exception:
-        logger.error("날씨 경보 확인 실패: city=%s", city, exc_info=True)
+        pass
 
     try:
         forecast = get_forecast(city)
         if forecast and forecast["rainExpected"]:
             alerts.append("☔ 오늘 **비 예보**가 있습니다. 우산을 챙기세요!")
     except Exception:
-        logger.warning("예보 기반 알림 확인 실패: city=%s", city, exc_info=True)
+        pass
 
     return alerts
