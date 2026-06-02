@@ -33,32 +33,35 @@ class RegionButton(discord.ui.Button):
         self.action  = action
 
     async def callback(self, interaction: discord.Interaction):
-        config = load_config()
-        userId = str(interaction.user.id)
+        try:
+            config = load_config()
+            userId = str(interaction.user.id)
 
-        if self.action == "register":
-            config["users"][userId] = {"region": self.engName}
-            save_config(config)
-            briefingTime = config.get("briefing_time", "07:00")
-            await interaction.response.edit_message(
-                content=(
-                    f"✅ **등록 완료!** 매일 **{briefingTime}**에 **{self.engName}** 날씨 기준 브리핑을 DM으로 받습니다.\n"
-                    f"지역 변경: `/설정 지역`, 시간 변경: `/설정 시간`, 구독 취소: `/탈퇴`"
-                ),
-                view=None,
-            )
-        elif self.action == "change":
-            if userId not in config.get("users", {}):
+            if self.action == "register":
+                config["users"][userId] = {"region": self.engName}
+                save_config(config)
+                briefingTime = config.get("briefing_time", "07:00")
                 await interaction.response.edit_message(
-                    content="❌ 먼저 `/등록`을 실행해주세요.", view=None
+                    content=(
+                        f"✅ **등록 완료!** 매일 **{briefingTime}**에 **{self.engName}** 날씨 기준 브리핑을 DM으로 받습니다.\n"
+                        f"지역 변경: `/설정 지역`, 시간 변경: `/설정 시간`, 구독 취소: `/탈퇴`"
+                    ),
+                    view=None,
                 )
-                return
-            config["users"][userId]["region"] = self.engName
-            save_config(config)
-            await interaction.response.edit_message(
-                content=f"✅ {interaction.user.mention}의 날씨 지역이 **{self.engName}**으로 변경되었습니다.",
-                view=None,
-            )
+            elif self.action == "change":
+                if userId not in config.get("users", {}):
+                    await interaction.response.edit_message(
+                        content="❌ 먼저 `/등록`을 실행해주세요.", view=None
+                    )
+                    return
+                config["users"][userId]["region"] = self.engName
+                save_config(config)
+                await interaction.response.edit_message(
+                    content=f"✅ {interaction.user.mention}의 날씨 지역이 **{self.engName}**으로 변경되었습니다.",
+                    view=None,
+                )
+        except discord.NotFound:
+            pass
 
 
 class RegionView(discord.ui.View):
@@ -114,6 +117,7 @@ class DailyReportBot(discord.Client):
 
     async def on_ready(self):
         print(f"[봇 준비 완료] {self.user} 로그인됨")
+        print("[주의] 이 봇을 동시에 여러 곳에서 실행하면 명령이 작동하지 않습니다. 반드시 하나만 실행하세요.")
 
     async def _dm_send(self, user, content: str):
         # Discord 2000자 제한 — 초과 시 문단 단위로 분할 전송
@@ -290,6 +294,29 @@ async def cmd_set_region(interaction: discord.Interaction):
 
 
 bot.tree.add_command(settingsGroup)
+
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    # interaction 만료(10062) 시 traceback 대신 경고 한 줄만 출력
+    if isinstance(error, app_commands.CommandInvokeError):
+        original = error.original
+        if isinstance(original, discord.NotFound) and original.code == 10062:
+            cmdName = interaction.command.name if interaction.command else "?"
+            print(
+                f"[경고] '/{cmdName}' 응답 실패 (interaction 만료) "
+                f"— 봇이 동시에 여러 개 실행되고 있지 않은지 확인하세요."
+            )
+            return
+    cmdName = interaction.command.name if interaction.command else "?"
+    print(f"[에러] '/{cmdName}' 실행 실패: {error}")
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send("⚠️ 명령 처리 중 오류가 발생했습니다.", ephemeral=True)
+        else:
+            await interaction.response.send_message("⚠️ 명령 처리 중 오류가 발생했습니다.", ephemeral=True)
+    except (discord.NotFound, discord.HTTPException):
+        pass
 
 
 def _subtract_30min(timeStr: str) -> str:
