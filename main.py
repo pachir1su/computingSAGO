@@ -41,7 +41,6 @@ logger = _setup_logging()
 _REQUIRED = {
     "discord":      "discord.py",
     "google.genai": "google-genai",
-    "schedule":     "schedule",
     "requests":     "requests",
     "feedparser":   "feedparser",
     "dotenv":       "python-dotenv",
@@ -64,7 +63,6 @@ import asyncio
 import threading
 import time
 
-import schedule
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -78,9 +76,26 @@ def _subtract_30min(timeStr: str) -> str:
     return f"{total // 60:02d}:{total % 60:02d}"
 
 
+def _fireCoroutine(bot, coro, label: str):
+    # 코루틴을 Discord 이벤트 루프에 안전하게 제출
+    if not bot.loop or bot.loop.is_closed():
+        logger.error(f"스케줄러: 이벤트 루프 미준비 — {label} 건너뜀")
+        return
+    future = asyncio.run_coroutine_threadsafe(coro, bot.loop)
+    def onDone(f):
+        try:
+            f.result()
+            logger.info(f"스케줄러: {label} 완료")
+        except Exception as e:
+            logger.error(f"스케줄러: {label} 실패: {type(e).__name__}: {e}")
+    future.add_done_callback(onDone)
+
+
 def run_scheduler(bot, loadConfigFn):
-    # 백그라운드 스레드 — config.json 변경을 감지해 스케줄 자동 갱신
+    # 백그라운드 스레드 — 매 15초마다 시간 비교로 브리핑/알림 발송 판단
     currentBriefingTime = None
+    sentBriefingDate = None
+    sentAlertDate = None
 
     while True:
         try:
@@ -88,59 +103,56 @@ def run_scheduler(bot, loadConfigFn):
             briefingTime = config.get("briefing_time", "07:00")
             alertTime    = _subtract_30min(briefingTime)
 
+            now = datetime.now()
+            todayStr = now.strftime("%Y-%m-%d")
+
+            # 시간 설정이 변경되면 발송 기록 초기화
             if briefingTime != currentBriefingTime:
-                schedule.clear()
+                prevTime = currentBriefingTime
                 currentBriefingTime = briefingTime
-
-                def trigger_report():
-                    logger.info("스케줄러: 브리핑 발송 트리거됨")
-                    if not bot.loop or bot.loop.is_closed():
-                        logger.error("스케줄러: 이벤트 루프 미준비 — 브리핑 건너뜀")
-                        return
-                    future = asyncio.run_coroutine_threadsafe(bot.send_daily_report(), bot.loop)
-                    def onDone(f):
-                        try:
-                            f.result()
-                            logger.info("스케줄러: 브리핑 발송 완료")
-                        except Exception as e:
-                            logger.error(f"스케줄러: 브리핑 발송 실패: {type(e).__name__}: {e}")
-                    future.add_done_callback(onDone)
-
-                def trigger_alert():
-                    logger.info("스케줄러: 날씨 알림 트리거됨")
-                    if not bot.loop or bot.loop.is_closed():
-                        logger.error("스케줄러: 이벤트 루프 미준비 — 알림 건너뜀")
-                        return
-                    future = asyncio.run_coroutine_threadsafe(bot.send_alerts(), bot.loop)
-                    def onDone(f):
-                        try:
-                            f.result()
-                            logger.info("스케줄러: 날씨 알림 완료")
-                        except Exception as e:
-                            logger.error(f"스케줄러: 날씨 알림 실패: {type(e).__name__}: {e}")
-                    future.add_done_callback(onDone)
-
-                schedule.every().day.at(briefingTime).do(trigger_report)
-                schedule.every().day.at(alertTime).do(trigger_alert)
                 logger.info(f"스케줄러: 알림 {alertTime} / 브리핑 {briefingTime} 등록됨")
 
-                # 시간 변경 직후, 이미 지나간 시간이면 즉시 실행 (90초 이내)
-                now = datetime.now()
                 bH, bM = map(int, briefingTime.split(":"))
-                briefingToday = now.replace(hour=bH, minute=bM, second=0, microsecond=0)
-                secondsAgo = (now - briefingToday).total_seconds()
-                if 0 < secondsAgo <= 90:
-                    logger.info(f"스케줄러: 브리핑 시간({briefingTime})이 방금 지남 — 즉시 발송")
-                    trigger_report()
+                briefingTarget = now.replace(hour=bH, minute=bM, second=0, microsecond=0)
+                secSinceBriefing = (now - briefingTarget).total_seconds()
 
                 aH, aM = map(int, alertTime.split(":"))
-                alertToday = now.replace(hour=aH, minute=aM, second=0, microsecond=0)
-                alertAgo = (now - alertToday).total_seconds()
-                if 0 < alertAgo <= 90:
-                    logger.info(f"스케줄러: 알림 시간({alertTime})이 방금 지남 — 즉시 발송")
-                    trigger_alert()
+                alertTarget = now.replace(hour=aH, minute=aM, second=0, microsecond=0)
+                secSinceAlert = (now - alertTarget).total_seconds()
 
-            schedule.run_pending()
+                if prevTime is None:
+                    # 봇 시작 시: 이미 지난 시간이면 오늘 발송 건너뜀
+                    sentBriefingDate = todayStr if secSinceBriefing > 0 else None
+                    sentAlertDate    = todayStr if secSinceAlert > 0 else None
+                else:
+                    # 사용자가 시간 변경: 90초 이내로 지난 시간이면 즉시 발송 허용
+                    sentBriefingDate = todayStr if secSinceBriefing > 90 else None
+                    sentAlertDate    = todayStr if secSinceAlert > 90 else None
+
+            # 날짜가 바뀌면 발송 기록 리셋
+            if sentBriefingDate is not None and sentBriefingDate != todayStr:
+                sentBriefingDate = None
+            if sentAlertDate is not None and sentAlertDate != todayStr:
+                sentAlertDate = None
+
+            # 브리핑 시간 도달 확인
+            bH, bM = map(int, briefingTime.split(":"))
+            briefingTarget = now.replace(hour=bH, minute=bM, second=0, microsecond=0)
+
+            if now >= briefingTarget and sentBriefingDate != todayStr:
+                sentBriefingDate = todayStr
+                logger.info("스케줄러: 브리핑 발송 트리거됨")
+                _fireCoroutine(bot, bot.send_daily_report(), "브리핑 발송")
+
+            # 알림 시간 도달 확인
+            aH, aM = map(int, alertTime.split(":"))
+            alertTarget = now.replace(hour=aH, minute=aM, second=0, microsecond=0)
+
+            if now >= alertTarget and sentAlertDate != todayStr:
+                sentAlertDate = todayStr
+                logger.info("스케줄러: 날씨 알림 트리거됨")
+                _fireCoroutine(bot, bot.send_alerts(), "날씨 알림")
+
         except Exception as e:
             logger.error(f"스케줄러: 루프 에러: {type(e).__name__}: {e}")
 
