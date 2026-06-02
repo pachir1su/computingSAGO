@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 import requests
@@ -5,6 +6,8 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger("bot.weather")
 
 # .env에서 키 로드 — 앞뒤 공백·따옴표 제거 (복붙 실수 방지)
 apiKey      = (os.getenv("OPENWEATHER_API_KEY") or "").strip().strip('"').strip("'")
@@ -19,7 +22,7 @@ _forecastCache = {}
 _cacheTtl = 600
 
 if not apiKey:
-    print("[날씨] ❌ OPENWEATHER_API_KEY가 .env에 없습니다!")
+    logger.error("OPENWEATHER_API_KEY가 .env에 없습니다!")
 
 
 def _request(url: str, params: dict) -> dict:
