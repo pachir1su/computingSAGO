@@ -124,11 +124,27 @@ def run_scheduler(bot, loadConfigFn):
                 schedule.every().day.at(alertTime).do(trigger_alert)
                 logger.info(f"스케줄러: 알림 {alertTime} / 브리핑 {briefingTime} 등록됨")
 
+                # 시간 변경 직후, 이미 지나간 시간이면 즉시 실행 (90초 이내)
+                now = datetime.now()
+                bH, bM = map(int, briefingTime.split(":"))
+                briefingToday = now.replace(hour=bH, minute=bM, second=0, microsecond=0)
+                secondsAgo = (now - briefingToday).total_seconds()
+                if 0 < secondsAgo <= 90:
+                    logger.info(f"스케줄러: 브리핑 시간({briefingTime})이 방금 지남 — 즉시 발송")
+                    trigger_report()
+
+                aH, aM = map(int, alertTime.split(":"))
+                alertToday = now.replace(hour=aH, minute=aM, second=0, microsecond=0)
+                alertAgo = (now - alertToday).total_seconds()
+                if 0 < alertAgo <= 90:
+                    logger.info(f"스케줄러: 알림 시간({alertTime})이 방금 지남 — 즉시 발송")
+                    trigger_alert()
+
             schedule.run_pending()
         except Exception as e:
             logger.error(f"스케줄러: 루프 에러: {type(e).__name__}: {e}")
 
-        time.sleep(60)
+        time.sleep(15)
 
 
 if __name__ == "__main__":
