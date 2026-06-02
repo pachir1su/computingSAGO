@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 from google import genai
@@ -6,6 +7,8 @@ from weather import get_weather, get_forecast
 from news import get_top_news
 
 load_dotenv()
+
+logger = logging.getLogger("bot.report")
 
 # 다중 API 키 라운드 로빈 — 키당 20회/일, 3키 = 60회/일
 _API_KEYS = [k for k in [
