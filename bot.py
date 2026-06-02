@@ -140,6 +140,14 @@ class DailyReportBot(discord.Client):
         if chunk:
             await user.send(chunk)
 
+    async def _send_report_to_user(self, userId: str, region: str):
+        # 단일 사용자에게 브리핑 DM 발송
+        targetUser = await self.fetch_user(int(userId))
+        logger.debug(f"브리핑: {targetUser} ({region}) 리포트 생성 중...")
+        report = await asyncio.to_thread(generate_report, region)
+        await self._dm_send(targetUser, f"📋 **데일리 브리핑**\n\n{report}")
+        logger.info(f"브리핑: 발송 완료 → {targetUser} ({region})")
+
     async def send_daily_report(self):
         # 등록된 모든 사용자에게 각자 지역 기준으로 DM 브리핑 발송
         config = load_config()
@@ -149,20 +157,28 @@ class DailyReportBot(discord.Client):
             return
 
         logger.info(f"브리핑: {len(users)}명에게 발송 시작")
+        failedUsers = []
         for userId, userConfig in users.items():
             region = userConfig.get("region", "Seoul")
             try:
-                targetUser = await self.fetch_user(int(userId))
-                logger.debug(f"브리핑: {targetUser} ({region}) 리포트 생성 중...")
-                report     = await asyncio.to_thread(generate_report, region)
-                await self._dm_send(targetUser, f"📋 **데일리 브리핑**\n\n{report}")
-                logger.info(f"브리핑: 발송 완료 → {targetUser} ({region})")
+                await self._send_report_to_user(userId, region)
             except discord.NotFound:
                 logger.error(f"브리핑: 사용자 {userId}를 찾을 수 없음")
             except discord.Forbidden:
                 logger.error(f"브리핑: 사용자 {userId} DM 거부됨 (DM 설정 확인 필요)")
             except Exception as e:
                 logger.error(f"브리핑: 사용자 {userId} 발송 실패: {type(e).__name__}: {e}")
+                failedUsers.append((userId, region))
+
+        # 실패한 사용자 60초 후 1회 재시도
+        if failedUsers:
+            logger.info(f"브리핑: {len(failedUsers)}명 실패 → 60초 후 재시도")
+            await asyncio.sleep(60)
+            for userId, region in failedUsers:
+                try:
+                    await self._send_report_to_user(userId, region)
+                except Exception as e:
+                    logger.error(f"브리핑 재시도 실패: 사용자 {userId}: {type(e).__name__}: {e}")
 
     async def send_alerts(self):
         # 비·미세먼지 조건 확인 후 조건 충족 사용자에게만 경보 DM 발송

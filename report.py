@@ -22,8 +22,8 @@ _MODEL    = "gemini-2.5-flash"
 _keyIndex = 0
 _keyLock  = threading.Lock()
 
-# 503 재시도 설정: 최대 4회, 초기 대기 2초 (지수 백오프)
-_MAX_RETRIES   = 4
+# 503 재시도: 최대 5회 시도, 초기 대기 2초 (지수 백오프 2→4→8→16)
+_MAX_ATTEMPTS  = 5
 _RETRY_BASE_S  = 2
 
 
@@ -33,8 +33,15 @@ def _ask(prompt: str) -> str:
         raise RuntimeError("Gemini API 키가 설정되지 않았습니다. .env 파일을 확인해주세요.")
 
     lastErr = None
-    for attempt in range(_MAX_RETRIES):
+    for attempt in range(_MAX_ATTEMPTS):
+        # 503 재시도 시 대기 (첫 시도는 즉시 실행)
+        if attempt > 0:
+            waitSec = _RETRY_BASE_S * (2 ** (attempt - 1))
+            logger.warning(f"Gemini 503 오류, {waitSec}초 후 재시도 ({attempt}/{_MAX_ATTEMPTS - 1})...")
+            time.sleep(waitSec)
+
         # 모든 키를 순회하며 시도, 429 발생 시 다음 키로 전환
+        hitUnavailable = False
         for _ in range(len(_clients)):
             with _keyLock:
                 idx = _keyIndex
@@ -50,20 +57,17 @@ def _ask(prompt: str) -> str:
                         _keyIndex = (idx + 1) % len(_clients)
                     continue
                 if "503" in errMsg or "UNAVAILABLE" in errMsg:
-                    # 503은 키 전환 없이 재시도 대상으로 올림
                     lastErr = e
+                    hitUnavailable = True
                     break
                 raise RuntimeError(f"Gemini AI 오류: {e}")
         else:
-            # 모든 키가 429인 경우
             raise RuntimeError("모든 Gemini API 키의 일일 한도를 초과했습니다. 내일 다시 이용해주세요.")
 
-        # 503 재시도: 지수 백오프
-        waitSec = _RETRY_BASE_S * (2 ** attempt)
-        logger.warning(f"Gemini 503 오류, {waitSec}초 후 재시도 ({attempt + 1}/{_MAX_RETRIES})...")
-        time.sleep(waitSec)
+        if not hitUnavailable:
+            break
 
-    raise RuntimeError(f"Gemini AI 오류 (재시도 {_MAX_RETRIES}회 실패): {lastErr}")
+    raise RuntimeError(f"Gemini AI 오류 (재시도 {_MAX_ATTEMPTS - 1}회 실패): {lastErr}")
 
 
 def generate_report(city: str = "Seoul") -> str:
