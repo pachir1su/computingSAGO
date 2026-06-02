@@ -1,6 +1,7 @@
 import logging
 import os
 import threading
+import time
 from google import genai
 from dotenv import load_dotenv
 from weather import get_weather, get_forecast
@@ -21,30 +22,48 @@ _MODEL    = "gemini-2.5-flash"
 _keyIndex = 0
 _keyLock  = threading.Lock()
 
+# 503 재시도 설정: 최대 4회, 초기 대기 2초 (지수 백오프)
+_MAX_RETRIES   = 4
+_RETRY_BASE_S  = 2
+
 
 def _ask(prompt: str) -> str:
     global _keyIndex
     if not _clients:
         raise RuntimeError("Gemini API 키가 설정되지 않았습니다. .env 파일을 확인해주세요.")
 
-    # 모든 키를 순회하며 시도, 429 발생 시 다음 키로 전환
-    for _ in range(len(_clients)):
-        with _keyLock:
-            idx = _keyIndex
-        try:
-            response = _clients[idx].models.generate_content(model=_MODEL, contents=prompt)
+    lastErr = None
+    for attempt in range(_MAX_RETRIES):
+        # 모든 키를 순회하며 시도, 429 발생 시 다음 키로 전환
+        for _ in range(len(_clients)):
             with _keyLock:
-                _keyIndex = (idx + 1) % len(_clients)
-            return response.text
-        except Exception as e:
-            errMsg = str(e)
-            if "429" in errMsg or "RESOURCE_EXHAUSTED" in errMsg:
+                idx = _keyIndex
+            try:
+                response = _clients[idx].models.generate_content(model=_MODEL, contents=prompt)
                 with _keyLock:
                     _keyIndex = (idx + 1) % len(_clients)
-                continue
-            raise RuntimeError(f"Gemini AI 오류: {e}")
+                return response.text
+            except Exception as e:
+                errMsg = str(e)
+                if "429" in errMsg or "RESOURCE_EXHAUSTED" in errMsg:
+                    with _keyLock:
+                        _keyIndex = (idx + 1) % len(_clients)
+                    continue
+                if "503" in errMsg or "UNAVAILABLE" in errMsg:
+                    # 503은 키 전환 없이 재시도 대상으로 올림
+                    lastErr = e
+                    break
+                raise RuntimeError(f"Gemini AI 오류: {e}")
+        else:
+            # 모든 키가 429인 경우
+            raise RuntimeError("모든 Gemini API 키의 일일 한도를 초과했습니다. 내일 다시 이용해주세요.")
 
-    raise RuntimeError("모든 Gemini API 키의 일일 한도를 초과했습니다. 내일 다시 이용해주세요.")
+        # 503 재시도: 지수 백오프
+        waitSec = _RETRY_BASE_S * (2 ** attempt)
+        logger.warning(f"Gemini 503 오류, {waitSec}초 후 재시도 ({attempt + 1}/{_MAX_RETRIES})...")
+        time.sleep(waitSec)
+
+    raise RuntimeError(f"Gemini AI 오류 (재시도 {_MAX_RETRIES}회 실패): {lastErr}")
 
 
 def generate_report(city: str = "Seoul") -> str:
