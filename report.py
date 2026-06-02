@@ -22,9 +22,9 @@ _MODEL    = "gemini-2.5-flash"
 _keyIndex = 0
 _keyLock  = threading.Lock()
 
-# 503 재시도: 최대 5회 시도, 초기 대기 2초 (지수 백오프 2→4→8→16)
-_MAX_ATTEMPTS  = 5
-_RETRY_BASE_S  = 2
+# 503/429 재시도: 최대 6회 시도, 대기 5→10→20→40→60 (총 ~135초)
+_MAX_ATTEMPTS    = 6
+_RETRY_BACKOFFS  = [5, 10, 20, 40, 60]
 
 
 def _ask(prompt: str) -> str:
@@ -34,14 +34,13 @@ def _ask(prompt: str) -> str:
 
     lastErr = None
     for attempt in range(_MAX_ATTEMPTS):
-        # 503 재시도 시 대기 (첫 시도는 즉시 실행)
         if attempt > 0:
-            waitSec = _RETRY_BASE_S * (2 ** (attempt - 1))
-            logger.warning(f"Gemini 503 오류, {waitSec}초 후 재시도 ({attempt}/{_MAX_ATTEMPTS - 1})...")
+            waitSec = _RETRY_BACKOFFS[min(attempt - 1, len(_RETRY_BACKOFFS) - 1)]
+            logger.warning(f"Gemini 일시 오류, {waitSec}초 후 재시도 ({attempt}/{_MAX_ATTEMPTS - 1})...")
             time.sleep(waitSec)
 
-        # 모든 키를 순회하며 시도, 429 발생 시 다음 키로 전환
-        hitUnavailable = False
+        # 모든 키를 순회하며 시도, 실패 시 다음 키로 전환
+        retryOuter = False
         for _ in range(len(_clients)):
             with _keyLock:
                 idx = _keyIndex
@@ -52,20 +51,20 @@ def _ask(prompt: str) -> str:
                 return response.text
             except Exception as e:
                 errMsg = str(e)
-                if "429" in errMsg or "RESOURCE_EXHAUSTED" in errMsg:
+                # 429/503 모두 다음 키로 전환 후 재시도
+                if "429" in errMsg or "RESOURCE_EXHAUSTED" in errMsg or "503" in errMsg or "UNAVAILABLE" in errMsg:
+                    lastErr = e
                     with _keyLock:
                         _keyIndex = (idx + 1) % len(_clients)
                     continue
-                if "503" in errMsg or "UNAVAILABLE" in errMsg:
-                    lastErr = e
-                    hitUnavailable = True
-                    break
                 raise RuntimeError(f"Gemini AI 오류: {e}")
-        else:
-            raise RuntimeError("모든 Gemini API 키의 일일 한도를 초과했습니다. 내일 다시 이용해주세요.")
 
-        if not hitUnavailable:
-            break
+        # 모든 키 실패 — 429만이면 한도 초과, 503 섞여 있으면 재시도
+        if lastErr and ("503" in str(lastErr) or "UNAVAILABLE" in str(lastErr)):
+            retryOuter = True
+
+        if not retryOuter:
+            raise RuntimeError("모든 Gemini API 키의 일일 한도를 초과했습니다. 내일 다시 이용해주세요.")
 
     raise RuntimeError(f"Gemini AI 오류 (재시도 {_MAX_ATTEMPTS - 1}회 실패): {lastErr}")
 
