@@ -132,9 +132,27 @@ def check_weather_alerts(city: str = "Seoul") -> list:
         pass
 
     try:
-        forecast = get_forecast(city)
-        if forecast and forecast["rainExpected"]:
+        # 오늘 남은 시간 + 내일 비 예보를 함께 확인
+        data = _request(forecastUrl, {
+            "q": city, "appid": apiKey, "units": "metric", "lang": "kr", "cnt": 16
+        })
+        todayDate    = datetime.now().strftime("%Y-%m-%d")
+        tomorrowDate = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        rainWeather  = {"Rain", "Drizzle", "Thunderstorm"}
+
+        todayRain = any(
+            item["weather"][0]["main"] in rainWeather
+            for item in data["list"] if item["dt_txt"].startswith(todayDate)
+        )
+        tomorrowRain = any(
+            item["weather"][0]["main"] in rainWeather
+            for item in data["list"] if item["dt_txt"].startswith(tomorrowDate)
+        )
+
+        if todayRain:
             alerts.append("☔ 오늘 **비 예보**가 있습니다. 우산을 챙기세요!")
+        elif tomorrowRain:
+            alerts.append("🌂 내일 **비 예보**가 있습니다. 우산을 미리 준비하세요!")
     except Exception:
         pass
 
