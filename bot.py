@@ -40,6 +40,23 @@ SECTION_KOR_NAMES = {
     "quote":   "한마디",
 }
 
+# 항목 아이콘 매핑
+SECTION_ICONS = {
+    "weather": "🌤",
+    "dust":    "💨",
+    "news":    "📰",
+    "outfit":  "👗",
+    "quote":   "💬",
+}
+
+# 뉴스 카테고리 아이콘 매핑
+NEWS_CATEGORY_ICONS = {
+    "종합":   "📋",
+    "경제":   "💰",
+    "IT":     "💻",
+    "스포츠": "⚽",
+}
+
 # ──────────────────── 프로그레스 바 유틸 ────────────────────
 
 # 애니메이션 상수
@@ -181,6 +198,221 @@ class RegionView(discord.ui.View):
         # 60초 후 버튼 비활성화
         for item in self.children:
             item.disabled = True
+
+
+# ──────────────────── 항목 토글 버튼 UI ────────────────────
+
+
+class SectionToggleButton(discord.ui.Button):
+    # 개별 브리핑 항목 토글 버튼
+    def __init__(self, sectionKey: str, enabled: bool):
+        icon = SECTION_ICONS[sectionKey]
+        korName = SECTION_KOR_NAMES[sectionKey]
+        style = discord.ButtonStyle.success if enabled else discord.ButtonStyle.secondary
+        super().__init__(label=f"{icon} {korName}", style=style)
+        self.sectionKey = sectionKey
+        self.enabled = enabled
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            # 토글 상태 전환
+            self.enabled = not self.enabled
+            self.style = (discord.ButtonStyle.success if self.enabled
+                          else discord.ButtonStyle.secondary)
+
+            # config 즉시 저장
+            userId = str(interaction.user.id)
+            config = load_config()
+            if userId not in config.get("users", {}):
+                return
+            sections = _get_user_sections(config["users"][userId])
+            sections[self.sectionKey] = self.enabled
+            config["users"][userId]["enabledSections"] = sections
+            save_config(config)
+
+            korName = SECTION_KOR_NAMES[self.sectionKey]
+            statusText = "켜짐" if self.enabled else "꺼짐"
+            log.info("[설정] 항목 토글 — %s → %s", korName, statusText)
+
+            # 임베드 갱신
+            embed = self.view.build_status_embed(
+                highlight=f"{SECTION_ICONS[self.sectionKey]} **{korName}** → {statusText}"
+            )
+            await interaction.response.edit_message(embed=embed, view=self.view)
+        except Exception as e:
+            log.error("[항목토글] 처리 실패: %s", e)
+
+
+class SectionAllButton(discord.ui.Button):
+    # 전체 켜기/끄기 일괄 버튼
+    def __init__(self, turnOn: bool):
+        label = "✅ 전체 켜기" if turnOn else "🔇 전체 끄기"
+        style = discord.ButtonStyle.primary if turnOn else discord.ButtonStyle.danger
+        super().__init__(label=label, style=style, row=1)
+        self.turnOn = turnOn
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            userId = str(interaction.user.id)
+            config = load_config()
+            if userId not in config.get("users", {}):
+                return
+
+            # 모든 섹션 일괄 변경 후 저장
+            sections = _get_user_sections(config["users"][userId])
+            for key in sections:
+                sections[key] = self.turnOn
+            config["users"][userId]["enabledSections"] = sections
+            save_config(config)
+
+            # 모든 토글 버튼 상태 동기화
+            for child in self.view.children:
+                if isinstance(child, SectionToggleButton):
+                    child.enabled = self.turnOn
+                    child.style = (discord.ButtonStyle.success if self.turnOn
+                                   else discord.ButtonStyle.secondary)
+
+            actionText = "전체 켜짐" if self.turnOn else "전체 꺼짐"
+            log.info("[설정] 항목 %s", actionText)
+
+            embed = self.view.build_status_embed(highlight=f"🔄 {actionText}")
+            await interaction.response.edit_message(embed=embed, view=self.view)
+        except Exception as e:
+            log.error("[항목전체] 처리 실패: %s", e)
+
+
+class SectionView(discord.ui.View):
+    # 브리핑 항목 토글 버튼 뷰 — 5개 토글 + 전체 켜기/끄기
+    def __init__(self, userId: str, sections: dict):
+        super().__init__(timeout=120)
+        self.userId = userId
+        # 항목별 토글 버튼 추가 (row 0)
+        for key in ("weather", "dust", "news", "outfit", "quote"):
+            enabled = sections.get(key, True)
+            self.add_item(SectionToggleButton(key, enabled))
+        # 전체 켜기/끄기 버튼 추가 (row 1)
+        self.add_item(SectionAllButton(turnOn=True))
+        self.add_item(SectionAllButton(turnOn=False))
+
+    def build_status_embed(self, highlight: str = "") -> discord.Embed:
+        # 현재 항목 상태를 임베드로 구성
+        activeCount = sum(
+            1 for c in self.children
+            if isinstance(c, SectionToggleButton) and c.enabled
+        )
+        totalCount = sum(
+            1 for c in self.children if isinstance(c, SectionToggleButton)
+        )
+
+        # 활성 비율에 따라 임베드 색상 변경
+        if activeCount == totalCount:
+            color = 0x2ECC71
+        elif activeCount == 0:
+            color = 0xE74C3C
+        else:
+            color = 0xF1C40F
+
+        embed = discord.Embed(
+            title="📋 브리핑 항목 설정",
+            description="버튼을 눌러 항목을 켜거나 끄세요.",
+            color=color,
+        )
+
+        # 각 항목의 현재 상태 표시
+        statusLines = []
+        for child in self.children:
+            if isinstance(child, SectionToggleButton):
+                icon = SECTION_ICONS[child.sectionKey]
+                korName = SECTION_KOR_NAMES[child.sectionKey]
+                status = "✅ 켜짐" if child.enabled else "❌ 꺼짐"
+                statusLines.append(f"{icon} **{korName}** — {status}")
+
+        embed.add_field(
+            name=f"현재 상태  ({activeCount}/{totalCount} 활성화)",
+            value="\n".join(statusLines),
+            inline=False,
+        )
+
+        # 변경 알림 표시
+        if highlight:
+            embed.add_field(name="변경", value=highlight, inline=False)
+
+        embed.set_footer(text="💡 변경사항은 즉시 저장됩니다 · 2분 후 자동 만료")
+        return embed
+
+    async def on_timeout(self):
+        # 2분 후 버튼 비활성화
+        for item in self.children:
+            if hasattr(item, "disabled"):
+                item.disabled = True
+
+
+# ──────────────────── 뉴스 카테고리 버튼 UI ────────────────────
+
+
+class NewsCategoryButton(discord.ui.Button):
+    # 뉴스 카테고리 선택 버튼
+    def __init__(self, category: str, isSelected: bool):
+        icon = NEWS_CATEGORY_ICONS.get(category, "📰")
+        style = discord.ButtonStyle.success if isSelected else discord.ButtonStyle.secondary
+        super().__init__(label=f"{icon} {category}", style=style)
+        self.category = category
+        self.isSelected = isSelected
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            userId = str(interaction.user.id)
+            config = load_config()
+            if userId not in config.get("users", {}):
+                return
+
+            # 카테고리 변경 저장
+            config["users"][userId]["newsCategory"] = self.category
+            save_config(config)
+            log.info("[설정] 뉴스 카테고리 변경 → %s", self.category)
+
+            # 선택된 버튼만 초록색, 나머지는 회색으로 갱신
+            for child in self.view.children:
+                if isinstance(child, NewsCategoryButton):
+                    child.isSelected = (child.category == self.category)
+                    child.style = (discord.ButtonStyle.success if child.isSelected
+                                   else discord.ButtonStyle.secondary)
+
+            embed = self.view.build_embed(self.category)
+            await interaction.response.edit_message(embed=embed, view=self.view)
+        except Exception as e:
+            log.error("[뉴스카테고리] 처리 실패: %s", e)
+
+
+class NewsCategoryView(discord.ui.View):
+    # 뉴스 카테고리 선택 뷰 — 4개 카테고리 버튼
+    def __init__(self, currentCategory: str):
+        super().__init__(timeout=60)
+        for category in ("종합", "경제", "IT", "스포츠"):
+            isSelected = (category == currentCategory)
+            self.add_item(NewsCategoryButton(category, isSelected))
+
+    def build_embed(self, selectedCategory: str) -> discord.Embed:
+        # 카테고리 선택 상태 임베드 구성
+        embed = discord.Embed(
+            title="📰 뉴스 카테고리 설정",
+            description="관심 뉴스 카테고리를 선택하세요.",
+            color=0x3498DB,
+        )
+        lines = []
+        for category in ("종합", "경제", "IT", "스포츠"):
+            icon = NEWS_CATEGORY_ICONS[category]
+            marker = "👈 선택됨" if category == selectedCategory else ""
+            lines.append(f"{icon} **{category}** {marker}")
+        embed.add_field(name="카테고리", value="\n".join(lines), inline=False)
+        embed.set_footer(text="💡 변경사항은 즉시 저장됩니다 · 1분 후 자동 만료")
+        return embed
+
+    async def on_timeout(self):
+        # 1분 후 버튼 비활성화
+        for item in self.children:
+            if hasattr(item, "disabled"):
+                item.disabled = True
 
 
 def load_config() -> dict:
@@ -588,16 +820,8 @@ async def cmd_set_region(interaction: discord.Interaction):
 
 
 @settingsGroup.command(name="뉴스카테고리", description="관심 뉴스 카테고리를 설정합니다")
-@app_commands.describe(카테고리="뉴스 카테고리 선택")
-@app_commands.choices(카테고리=[
-    app_commands.Choice(name="종합", value="종합"),
-    app_commands.Choice(name="경제", value="경제"),
-    app_commands.Choice(name="IT", value="IT"),
-    app_commands.Choice(name="스포츠", value="스포츠"),
-])
-async def cmd_set_news_category(interaction: discord.Interaction,
-                                카테고리: app_commands.Choice[str]):
-    # 등록 여부 확인 후 뉴스 카테고리 저장
+async def cmd_set_news_category(interaction: discord.Interaction):
+    # 등록 여부 확인 후 카테고리 선택 버튼 표시
     config = load_config()
     userId = str(interaction.user.id)
     if userId not in config.get("users", {}):
@@ -606,35 +830,17 @@ async def cmd_set_news_category(interaction: discord.Interaction,
         )
         return
 
-    config["users"][userId]["newsCategory"] = 카테고리.value
-    save_config(config)
-    log.info("[설정] 뉴스 카테고리 변경 → %s", 카테고리.value)
+    currentCategory = config["users"][userId].get("newsCategory", "종합")
+    view = NewsCategoryView(currentCategory)
+    embed = view.build_embed(currentCategory)
     await interaction.response.send_message(
-        f"✅ 뉴스 카테고리가 **{카테고리.value}**(으)로 설정되었습니다.\n"
-        f"브리핑과 `/뉴스` 명령에 반영됩니다.",
-        ephemeral=True,
+        embed=embed, view=view, ephemeral=True
     )
 
 
 @settingsGroup.command(name="항목", description="브리핑 항목을 켜거나 끕니다")
-@app_commands.describe(항목="설정할 브리핑 항목", 상태="on 또는 off")
-@app_commands.choices(
-    항목=[
-        app_commands.Choice(name="날씨", value="weather"),
-        app_commands.Choice(name="미세먼지", value="dust"),
-        app_commands.Choice(name="뉴스", value="news"),
-        app_commands.Choice(name="옷차림", value="outfit"),
-        app_commands.Choice(name="한마디", value="quote"),
-    ],
-    상태=[
-        app_commands.Choice(name="on", value="on"),
-        app_commands.Choice(name="off", value="off"),
-    ],
-)
-async def cmd_set_section(interaction: discord.Interaction,
-                          항목: app_commands.Choice[str],
-                          상태: app_commands.Choice[str]):
-    # 등록 여부 확인 후 개별 브리핑 항목 on/off 저장
+async def cmd_set_section(interaction: discord.Interaction):
+    # 등록 여부 확인 후 항목 토글 버튼 표시
     config = load_config()
     userId = str(interaction.user.id)
     if userId not in config.get("users", {}):
@@ -643,27 +849,12 @@ async def cmd_set_section(interaction: discord.Interaction,
         )
         return
 
-    # 기존 섹션 설정 로드 (미설정 시 전체 활성화)
-    enabledSections = _get_user_sections(config["users"][userId])
-    enabledSections[항목.value] = (상태.value == "on")
-    config["users"][userId]["enabledSections"] = enabledSections
-    save_config(config)
-
-    statusEmoji = "✅ 켜짐" if 상태.value == "on" else "❌ 꺼짐"
-    log.info("[설정] 항목 변경 — %s → %s", 항목.name, 상태.value)
-
-    # 현재 전체 항목 상태 표시
-    statusLines = []
-    for key in ("weather", "dust", "news", "outfit", "quote"):
-        korName = SECTION_KOR_NAMES[key]
-        onOff = "✅" if enabledSections.get(key, True) else "❌"
-        statusLines.append(f"  {onOff} {korName}")
-    statusSummary = "\n".join(statusLines)
-
+    # 현재 섹션 상태 로드 후 토글 뷰 표시
+    sections = _get_user_sections(config["users"][userId])
+    view = SectionView(userId, sections)
+    embed = view.build_status_embed()
     await interaction.response.send_message(
-        f"**{항목.name}** 항목이 **{statusEmoji}**(으)로 변경되었습니다.\n\n"
-        f"📋 **현재 브리핑 항목 상태:**\n{statusSummary}",
-        ephemeral=True,
+        embed=embed, view=view, ephemeral=True
     )
 
 
