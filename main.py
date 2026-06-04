@@ -6,12 +6,12 @@ logging.getLogger("discord").setLevel(logging.WARNING)
 
 # 필수 패키지 사전 검사 — 미설치 시 설치 명령어 안내 후 종료
 _REQUIRED = {
-    "discord":        "discord.py",
+    "discord":      "discord.py",
     "google.genai": "google-genai",
-    "schedule":       "schedule",
-    "requests":       "requests",
-    "feedparser":     "feedparser",
-    "dotenv":         "python-dotenv",
+    "schedule":     "schedule",
+    "requests":     "requests",
+    "feedparser":   "feedparser",
+    "dotenv":       "python-dotenv",
 }
 _missing = []
 for _module, _pkg in _REQUIRED.items():
@@ -39,8 +39,10 @@ import time
 
 import schedule
 from dotenv import load_dotenv
+from logger import setup_logger
 
 load_dotenv()
+log = setup_logger("main")
 
 
 def _subtract_30min(timeStr: str) -> str:
@@ -57,30 +59,38 @@ def run_scheduler(bot, loadConfigFn):
     currentBriefingTime = None
 
     while True:
-        config       = loadConfigFn()
-        briefingTime = config.get("briefing_time", "07:00")
-        alertTime    = _subtract_30min(briefingTime)
+        try:
+            config       = loadConfigFn()
+            briefingTime = config.get("briefing_time", "07:00")
+            alertTime    = _subtract_30min(briefingTime)
 
-        if briefingTime != currentBriefingTime:
-            # 시간 변경 감지 시 기존 스케줄 초기화 후 재등록
-            schedule.clear()
-            currentBriefingTime = briefingTime
+            if briefingTime != currentBriefingTime:
+                # 시간 변경 감지 시 기존 스케줄 초기화 후 재등록
+                schedule.clear()
+                currentBriefingTime = briefingTime
 
-            def trigger_report():
-                # 브리핑 코루틴을 Discord 이벤트 루프에 안전하게 제출
-                if bot.loop and not bot.loop.is_closed():
-                    asyncio.run_coroutine_threadsafe(bot.send_daily_report(), bot.loop)
+                def trigger_report():
+                    # 브리핑 코루틴을 Discord 이벤트 루프에 안전하게 제출
+                    if bot.loop and not bot.loop.is_closed():
+                        asyncio.run_coroutine_threadsafe(
+                            bot.send_daily_report(), bot.loop
+                        )
 
-            def trigger_alert():
-                # 날씨 알림 코루틴을 Discord 이벤트 루프에 안전하게 제출
-                if bot.loop and not bot.loop.is_closed():
-                    asyncio.run_coroutine_threadsafe(bot.send_alerts(), bot.loop)
+                def trigger_alert():
+                    # 날씨 알림 코루틴을 Discord 이벤트 루프에 안전하게 제출
+                    if bot.loop and not bot.loop.is_closed():
+                        asyncio.run_coroutine_threadsafe(
+                            bot.send_alerts(), bot.loop
+                        )
 
-            schedule.every().day.at(briefingTime).do(trigger_report)
-            schedule.every().day.at(alertTime).do(trigger_alert)
-            print(f"[스케줄러] 알림: {alertTime} / 브리핑: {briefingTime}")
+                schedule.every().day.at(briefingTime).do(trigger_report)
+                schedule.every().day.at(alertTime).do(trigger_alert)
+                log.info("[스케줄러] 알림: %s / 브리핑: %s", alertTime, briefingTime)
 
-        schedule.run_pending()
+            schedule.run_pending()
+        except Exception as e:
+            log.error("[스케줄러] 오류 발생: %s", e)
+
         time.sleep(60)  # 1분 간격 폴링 (설정 변경 최대 1분 내 반영)
 
 
@@ -90,7 +100,7 @@ if __name__ == "__main__":
     # Discord 봇 토큰 유효성 확인
     discordToken = os.getenv("DISCORD_TOKEN")
     if not discordToken:
-        print("[오류] .env 파일에 DISCORD_TOKEN을 설정해주세요.")
+        log.error("[오류] .env 파일에 DISCORD_TOKEN을 설정해주세요.")
         raise SystemExit(1)
 
     # 스케줄러를 데몬 스레드로 실행 (봇 종료 시 자동 종료)
@@ -98,6 +108,7 @@ if __name__ == "__main__":
         target=run_scheduler, args=(bot, load_config), daemon=True
     )
     schedulerThread.start()
+    log.info("[시작] 봇 실행 중...")
 
     # Discord 봇 실행 (메인 스레드 점유)
     bot.run(discordToken)
