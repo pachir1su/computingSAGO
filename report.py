@@ -1,4 +1,5 @@
 import os
+import time
 import threading
 from google import genai
 from dotenv import load_dotenv
@@ -40,12 +41,15 @@ _SECTION_META = {
 
 
 def _ask(prompt: str) -> str:
-    # 라운드 로빈으로 Gemini 클라이언트 순회, 429 시 자동 키 전환
+    # 라운드 로빈으로 Gemini 클라이언트 순회, 429/503 시 자동 재시도
     global _keyIndex
     if not _clients:
         raise RuntimeError("Gemini API 키가 설정되지 않았습니다. .env 파일을 확인해주세요.")
 
-    for _ in range(len(_clients)):
+    # 키 수 + 503 재시도 여유분
+    retryCount = len(_clients) + 2
+
+    for attempt in range(retryCount):
         with _keyLock:
             idx = _keyIndex
         try:
@@ -55,14 +59,28 @@ def _ask(prompt: str) -> str:
             return response.text
         except Exception as e:
             errMsg = str(e)
+            # 429 Rate Limit — 즉시 다음 키로 전환
             if "429" in errMsg or "RESOURCE_EXHAUSTED" in errMsg:
                 log.warning("Gemini API 키 %d 한도 초과, 다음 키로 전환", idx)
                 with _keyLock:
                     _keyIndex = (idx + 1) % len(_clients)
                 continue
+            # 503 Unavailable — 잠시 대기 후 다음 키로 재시도
+            if "503" in errMsg or "UNAVAILABLE" in errMsg:
+                log.warning(
+                    "Gemini API 일시적 오류 (키 %d, 시도 %d/%d), 재시도 중...",
+                    idx, attempt + 1, retryCount,
+                )
+                with _keyLock:
+                    _keyIndex = (idx + 1) % len(_clients)
+                time.sleep(2)
+                continue
             raise RuntimeError(f"Gemini AI 오류: {e}")
 
-    raise RuntimeError("모든 Gemini API 키의 일일 한도를 초과했습니다. 내일 다시 이용해주세요.")
+    raise RuntimeError(
+        "모든 Gemini API 키의 한도 초과 또는 서비스 일시 불가 상태입니다. "
+        "잠시 후 다시 시도해주세요."
+    )
 
 
 def generate_report(city: str = "Seoul", newsCategory: str = "종합",
