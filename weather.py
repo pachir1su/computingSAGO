@@ -1,4 +1,3 @@
-import logging
 import os
 import time
 import requests
@@ -6,8 +5,6 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
-
-logger = logging.getLogger("bot.weather")
 
 # .env에서 키 로드 — 앞뒤 공백·따옴표 제거 (복붙 실수 방지)
 apiKey      = (os.getenv("OPENWEATHER_API_KEY") or "").strip().strip('"').strip("'")
@@ -22,7 +19,7 @@ _forecastCache = {}
 _cacheTtl = 600
 
 if not apiKey:
-    logger.error("OPENWEATHER_API_KEY가 .env에 없습니다!")
+    print("[날씨] ❌ OPENWEATHER_API_KEY가 .env에 없습니다!")
 
 
 def _request(url: str, params: dict) -> dict:
@@ -135,27 +132,9 @@ def check_weather_alerts(city: str = "Seoul") -> list:
         pass
 
     try:
-        # 오늘 남은 시간 + 내일 비 예보를 함께 확인
-        data = _request(forecastUrl, {
-            "q": city, "appid": apiKey, "units": "metric", "lang": "kr", "cnt": 16
-        })
-        todayDate    = datetime.now().strftime("%Y-%m-%d")
-        tomorrowDate = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-        rainWeather  = {"Rain", "Drizzle", "Thunderstorm"}
-
-        todayRain = any(
-            item["weather"][0]["main"] in rainWeather
-            for item in data["list"] if item["dt_txt"].startswith(todayDate)
-        )
-        tomorrowRain = any(
-            item["weather"][0]["main"] in rainWeather
-            for item in data["list"] if item["dt_txt"].startswith(tomorrowDate)
-        )
-
-        if todayRain:
+        forecast = get_forecast(city)
+        if forecast and forecast["rainExpected"]:
             alerts.append("☔ 오늘 **비 예보**가 있습니다. 우산을 챙기세요!")
-        elif tomorrowRain:
-            alerts.append("🌂 내일 **비 예보**가 있습니다. 우산을 미리 준비하세요!")
     except Exception:
         pass
 
