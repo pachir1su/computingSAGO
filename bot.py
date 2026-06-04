@@ -1,7 +1,9 @@
 import asyncio
 import json
 import os
+import re
 import discord
+from datetime import datetime
 from discord import app_commands
 from dotenv import load_dotenv
 from report import (
@@ -79,6 +81,51 @@ def progressBarAlt(p: float, width: int = ANIM_BAR_WIDTH) -> str:
     return "▰" * fill + "▱" * (width - fill)
 
 
+def progressBarDot(p: float, width: int = ANIM_BAR_WIDTH) -> str:
+    # 원형(●○) 스타일 프로그레스 바 생성
+    p = max(0.0, min(1.0, p))
+    fill = int(round(p * width))
+    return "●" * fill + "○" * (width - fill)
+
+
+def progressBarArrow(p: float, width: int = ANIM_BAR_WIDTH) -> str:
+    # 화살표(▸▹) 스타일 프로그레스 바 생성
+    p = max(0.0, min(1.0, p))
+    fill = int(round(p * width))
+    return "▸" * fill + "▹" * (width - fill)
+
+
+# ──────────────────── 명령어별 애니메이션 스타일 ────────────────────
+
+ANIM_STYLES = {
+    "default": {
+        "emojis": ["⏳", "⌛"],
+        "barFn": progressBar,
+        "color": 0xF1C40F,
+    },
+    "report": {
+        "emojis": ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"],
+        "barFn": progressBar,
+        "color": 0x3498DB,
+    },
+    "weather": {
+        "emojis": ["🌤", "⛅", "🌥", "☁️", "🌦", "🌤"],
+        "barFn": progressBarAlt,
+        "color": 0x87CEEB,
+    },
+    "news": {
+        "emojis": ["📰", "📋", "📄", "📝"],
+        "barFn": progressBarDot,
+        "color": 0xE67E22,
+    },
+    "question": {
+        "emojis": ["🤔", "💭", "💡", "✨"],
+        "barFn": progressBarArrow,
+        "color": 0x9B59B6,
+    },
+}
+
+
 class RegionButton(discord.ui.Button):
     def __init__(self, korName: str, engName: str, action: str):
         super().__init__(label=korName, style=discord.ButtonStyle.primary)
@@ -139,6 +186,7 @@ class RegionButton(discord.ui.Button):
                         f"• 시간 변경: `/설정 시간`\n"
                         f"• 뉴스 카테고리: `/설정 뉴스카테고리`\n"
                         f"• 항목 on/off: `/설정 항목`\n"
+                        f"• 설정 확인: `/설정 보기`\n"
                         f"• 구독 취소: `/탈퇴`"
                     ),
                 )
@@ -453,6 +501,123 @@ def _get_user_sections(userConfig: dict) -> dict:
     return userConfig.get("enabledSections", dict(DEFAULT_SECTIONS))
 
 
+# ──────────────────── 임베드 빌더 ────────────────────
+
+
+def _build_report_embed(reportText: str) -> discord.Embed:
+    # Gemini 리포트 텍스트를 섹션별 필드 임베드로 변환
+    embed = discord.Embed(
+        title="📋 데일리 브리핑",
+        color=0x3498DB,
+        timestamp=datetime.now(),
+    )
+
+    sectionMarkers = [
+        ("🌤", "오늘의 날씨"),
+        ("💨", "미세먼지"),
+        ("📰", "주요 뉴스"),
+        ("👗", "옷차림 추천"),
+        ("💬", "오늘의 한마디"),
+    ]
+
+    # 각 섹션 마커의 위치 탐색
+    positions = []
+    for emoji, title in sectionMarkers:
+        idx = reportText.find(emoji)
+        if idx != -1:
+            positions.append((idx, emoji, title))
+
+    positions.sort(key=lambda x: x[0])
+
+    if positions:
+        for i, (pos, emoji, title) in enumerate(positions):
+            # 헤더 라인 끝 → 본문 시작 지점
+            headerEnd = reportText.find('\n', pos)
+            contentStart = headerEnd + 1 if headerEnd != -1 else len(reportText)
+
+            # 다음 섹션 헤더가 있는 라인의 시작점을 경계로 사용 (번호 접두어 포함 방지)
+            if i + 1 < len(positions):
+                nextPos = positions[i + 1][0]
+                lineStart = reportText.rfind('\n', 0, nextPos)
+                contentEnd = lineStart if lineStart != -1 else nextPos
+            else:
+                contentEnd = len(reportText)
+
+            content = reportText[contentStart:contentEnd].strip()
+
+            # 임베드 필드 값 제한 (1024자)
+            if len(content) > 1024:
+                content = content[:1020] + "..."
+            if not content:
+                content = "정보를 가져올 수 없습니다."
+
+            embed.add_field(name=f"{emoji} {title}", value=content, inline=False)
+    else:
+        # 섹션 파싱 실패 시 전체 텍스트를 description으로 표시
+        desc = reportText[:4090] + "..." if len(reportText) > 4090 else reportText
+        embed.description = desc
+
+    embed.set_footer(text="SAGO 데일리 브리핑 봇")
+    return embed
+
+
+def _build_weather_embed(text: str) -> discord.Embed:
+    # 날씨 응답 텍스트를 임베드로 변환, 제목 자동 추출
+    titleMatch = re.match(r'🌤\s*\*\*(.*?)\*\*', text)
+    if titleMatch:
+        embedTitle = f"🌤 {titleMatch.group(1)}"
+        desc = text[titleMatch.end():].strip()
+    else:
+        embedTitle = "🌤 날씨 정보"
+        desc = text
+
+    if len(desc) > 4090:
+        desc = desc[:4090] + "..."
+
+    embed = discord.Embed(
+        title=embedTitle, description=desc,
+        color=0x87CEEB, timestamp=datetime.now(),
+    )
+    embed.set_footer(text="OpenWeatherMap 데이터 기반")
+    return embed
+
+
+def _build_news_embed(text: str) -> discord.Embed:
+    # 뉴스 응답 텍스트를 임베드로 변환, 제목 자동 추출
+    titleMatch = re.match(r'📰\s*\*\*(.*?)\*\*', text)
+    if titleMatch:
+        embedTitle = f"📰 {titleMatch.group(1)}"
+        desc = text[titleMatch.end():].strip()
+    else:
+        embedTitle = "📰 뉴스 요약"
+        desc = text
+
+    if len(desc) > 4090:
+        desc = desc[:4090] + "..."
+
+    embed = discord.Embed(
+        title=embedTitle, description=desc,
+        color=0xE67E22, timestamp=datetime.now(),
+    )
+    embed.set_footer(text="Google News 기반")
+    return embed
+
+
+def _build_question_embed(text: str) -> discord.Embed:
+    # Gemini 질문 응답을 임베드로 변환
+    if len(text) > 4090:
+        text = text[:4090] + "..."
+
+    embed = discord.Embed(
+        title="💬 Gemini 답변",
+        description=text,
+        color=0x9B59B6,
+        timestamp=datetime.now(),
+    )
+    embed.set_footer(text="Google Gemini AI")
+    return embed
+
+
 # ──────────────────── 애니메이션 헬퍼 ────────────────────
 
 async def _send_followup_split(interaction: discord.Interaction, content: str):
@@ -478,26 +643,34 @@ async def _send_followup_split(interaction: discord.Interaction, content: str):
 
 async def _animated_command(interaction: discord.Interaction, *, title: str,
                             workFn, workArgs: tuple = (), resultPrefix: str = "",
-                            errorLabel: str = "작업"):
-    # 프로그레스 바 애니메이션과 함께 동기 작업을 백그라운드 실행하고 결과 표시
+                            errorLabel: str = "작업", animStyle: str = "default",
+                            embedBuilder=None):
+    # 명령어별 애니메이션 스타일로 프로그레스 바를 표시하고, 결과를 임베드 또는 텍스트로 출력
     try:
+        style = ANIM_STYLES.get(animStyle, ANIM_STYLES["default"])
+        emojis = style["emojis"]
+        barFn = style["barFn"]
+        loadColor = style["color"]
+
         # 초기 로딩 임베드 전송 (Discord 3초 타임아웃 회피)
-        initEmbed = discord.Embed(title=f"⏳ {title}...", color=0xF1C40F)
-        initEmbed.add_field(name="진행", value=f"{progressBar(0.0)} **0%**")
+        initEmoji = emojis[0]
+        initEmbed = discord.Embed(title=f"{initEmoji} {title}...", color=loadColor)
+        initEmbed.add_field(name="진행", value=f"{barFn(0.0)} **0%**")
         await interaction.response.send_message(embed=initEmbed)
 
         # 백그라운드에서 실제 작업 시작
         task = asyncio.create_task(asyncio.to_thread(workFn, *workArgs))
 
-        # 작업 완료까지 프로그레스 바 애니메이션 루프
+        # 작업 완료까지 이모지 순환 + 프로그레스 바 애니메이션 루프
         tick = 0
         while not task.done() and tick < ANIM_MAX_TICKS:
             tick += 1
             # 로그 곡선으로 자연스러운 진행률 표시 (최대 90%)
             p = min(1 - 1 / (1 + tick * 0.15), 0.9)
             pct = int(p * 100)
-            tickEmbed = discord.Embed(title=f"⏳ {title}...", color=0xF1C40F)
-            tickEmbed.add_field(name="진행", value=f"{progressBar(p)} **{pct}%**")
+            emoji = emojis[tick % len(emojis)]
+            tickEmbed = discord.Embed(title=f"{emoji} {title}...", color=loadColor)
+            tickEmbed.add_field(name="진행", value=f"{barFn(p)} **{pct}%**")
             try:
                 await interaction.edit_original_response(embed=tickEmbed)
             except discord.NotFound:
@@ -509,34 +682,51 @@ async def _animated_command(interaction: discord.Interaction, *, title: str,
 
         # 100% 완료 임베드 표시
         doneEmbed = discord.Embed(title=f"✅ {title} 완료!", color=0x2ECC71)
-        doneEmbed.add_field(name="진행", value=f"{progressBar(1.0)} **100%**")
+        doneEmbed.add_field(name="진행", value=f"{barFn(1.0)} **100%**")
         try:
             await interaction.edit_original_response(embed=doneEmbed)
         except discord.NotFound:
             pass
         await asyncio.sleep(0.5)
 
-        # 결과 텍스트 조합
-        content = f"{resultPrefix}{result}" if resultPrefix else result
+        # 결과 임베드 또는 텍스트 전송
+        resultSent = False
 
-        # 결과 전송 — 길이에 따라 인라인 수정 또는 followup 분할
-        if len(content) <= 1900:
+        if embedBuilder:
             try:
-                await interaction.edit_original_response(
-                    content=content, embed=None
-                )
-            except discord.NotFound:
-                await interaction.followup.send(content)
-        else:
-            try:
-                await interaction.edit_original_response(
-                    embed=discord.Embed(
-                        title=f"✅ {title} 완료!", color=0x2ECC71
-                    ),
-                )
-            except discord.NotFound:
-                pass
-            await _send_followup_split(interaction, content)
+                resultEmbed = embedBuilder(result)
+                try:
+                    await interaction.edit_original_response(
+                        embed=resultEmbed, content=None
+                    )
+                    resultSent = True
+                except discord.NotFound:
+                    await interaction.followup.send(embed=resultEmbed)
+                    resultSent = True
+            except Exception as buildErr:
+                log.warning("[임베드] 처리 실패, 텍스트 대체: %s", buildErr)
+
+        # 임베드 실패 시 또는 embedBuilder 없을 때 텍스트 전송
+        if not resultSent:
+            content = f"{resultPrefix}{result}" if resultPrefix else result
+
+            if len(content) <= 1900:
+                try:
+                    await interaction.edit_original_response(
+                        content=content, embed=None
+                    )
+                except discord.NotFound:
+                    await interaction.followup.send(content)
+            else:
+                try:
+                    await interaction.edit_original_response(
+                        embed=discord.Embed(
+                            title=f"✅ {title} 완료!", color=0x2ECC71
+                        ),
+                    )
+                except discord.NotFound:
+                    pass
+                await _send_followup_split(interaction, content)
 
     except Exception as e:
         # 에러 발생 시 에러 임베드 표시
@@ -584,6 +774,16 @@ class DailyReportBot(discord.Client):
         if chunk:
             await user.send(chunk)
 
+    async def _dm_send_embed(self, user, embed: discord.Embed):
+        # 임베드를 DM으로 전송, 실패 시 description 텍스트로 대체
+        try:
+            await user.send(embed=embed)
+        except discord.HTTPException:
+            fallbackText = embed.description or ""
+            for field in embed.fields:
+                fallbackText += f"\n\n**{field.name}**\n{field.value}"
+            await self._dm_send(user, fallbackText)
+
     async def send_daily_report(self):
         # 등록된 모든 사용자에게 각자 설정 기준으로 DM 브리핑 발송
         config = load_config()
@@ -607,7 +807,14 @@ class DailyReportBot(discord.Client):
                 report = await asyncio.to_thread(
                     generate_report, region, newsCategory, enabledSections,
                 )
-                await self._dm_send(targetUser, f"📋 **데일리 브리핑**\n\n{report}")
+
+                # 리포트를 임베드로 변환하여 DM 발송
+                try:
+                    reportEmbed = _build_report_embed(report)
+                    await self._dm_send_embed(targetUser, reportEmbed)
+                except Exception:
+                    await self._dm_send(targetUser, f"📋 **데일리 브리핑**\n\n{report}")
+
                 log.info("[브리핑] 발송 완료 → %s (%s)", maskedId, region)
                 successCount += 1
             except discord.NotFound:
@@ -706,7 +913,7 @@ async def cmd_report(interaction: discord.Interaction):
     newsCategory = userConfig.get("newsCategory", "종합")
     enabledSections = _get_user_sections(userConfig)
 
-    # 애니메이션과 함께 리포트 생성
+    # 달 위상 이모지 순환 애니메이션 + 리포트 임베드 결과
     await _animated_command(
         interaction,
         title="리포트 생성 중",
@@ -714,6 +921,8 @@ async def cmd_report(interaction: discord.Interaction):
         workArgs=(region, newsCategory, enabledSections),
         resultPrefix="📋 **데일리 브리핑**\n\n",
         errorLabel="리포트",
+        animStyle="report",
+        embedBuilder=_build_report_embed,
     )
 
 
@@ -724,13 +933,15 @@ async def cmd_weather(interaction: discord.Interaction):
     userId = str(interaction.user.id)
     region = config.get("users", {}).get(userId, {}).get("region", "Seoul")
 
-    # 애니메이션과 함께 날씨 조회
+    # 날씨 이모지 순환 애니메이션 + 날씨 임베드 결과
     await _animated_command(
         interaction,
         title="날씨 조회 중",
         workFn=generate_weather_summary,
         workArgs=(region,),
         errorLabel="날씨",
+        animStyle="weather",
+        embedBuilder=_build_weather_embed,
     )
 
 
@@ -741,20 +952,22 @@ async def cmd_news(interaction: discord.Interaction):
     userId = str(interaction.user.id)
     newsCategory = config.get("users", {}).get(userId, {}).get("newsCategory", "종합")
 
-    # 애니메이션과 함께 뉴스 조회
+    # 뉴스 이모지 순환 애니메이션 + 뉴스 임베드 결과
     await _animated_command(
         interaction,
         title="뉴스 조회 중",
         workFn=generate_news_summary,
         workArgs=(newsCategory,),
         errorLabel="뉴스",
+        animStyle="news",
+        embedBuilder=_build_news_embed,
     )
 
 
 @bot.tree.command(name="질문", description="Gemini AI에게 자유롭게 질문합니다")
 @app_commands.describe(내용="Gemini에게 물어볼 내용")
 async def cmd_ask(interaction: discord.Interaction, 내용: str):
-    # 애니메이션과 함께 Gemini 질문 처리
+    # 사고 이모지 순환 애니메이션 + Gemini 답변 임베드 결과
     await _animated_command(
         interaction,
         title="Gemini 응답 대기 중",
@@ -762,12 +975,137 @@ async def cmd_ask(interaction: discord.Interaction, 내용: str):
         workArgs=(내용,),
         resultPrefix="💬 **Gemini 답변**\n\n",
         errorLabel="질문",
+        animStyle="question",
+        embedBuilder=_build_question_embed,
     )
+
+
+@bot.tree.command(name="도움말", description="모든 명령어와 사용법을 확인합니다")
+async def cmd_help(interaction: discord.Interaction):
+    # 카테고리별 명령어 안내 임베드 표시
+    embed = discord.Embed(
+        title="📖 SAGO 데일리 브리핑 봇 도움말",
+        description="AI가 매일 아침 날씨, 뉴스, 옷차림 추천을 브리핑해드립니다.",
+        color=0x3498DB,
+    )
+
+    embed.add_field(
+        name="📌 기본 명령어",
+        value=(
+            "`/등록` — 데일리 브리핑 구독 (지역 선택)\n"
+            "`/탈퇴` — 구독 취소\n"
+            "`/리포트` — 즉시 리포트 생성\n"
+            "`/도움말` — 이 도움말 표시"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="🔍 정보 조회",
+        value=(
+            "`/날씨` — 현재 날씨 + 내일 예보\n"
+            "`/뉴스` — 최신 뉴스 요약\n"
+            "`/질문 [내용]` — Gemini AI에게 자유 질문"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="⚙️ 설정",
+        value=(
+            "`/설정 시간 [HH:MM]` — 브리핑 시간 변경\n"
+            "`/설정 지역` — 날씨 조회 지역 변경\n"
+            "`/설정 뉴스카테고리` — 뉴스 카테고리 선택\n"
+            "`/설정 항목` — 브리핑 항목 on/off\n"
+            "`/설정 보기` — 현재 설정 대시보드"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="💡 팁",
+        value=(
+            "• 매일 브리핑은 설정 시간에 DM으로 자동 발송됩니다\n"
+            "• 브리핑 30분 전 비·미세먼지 경보가 전송됩니다\n"
+            "• 모든 설정은 `/등록` 후 사용 가능합니다"
+        ),
+        inline=False,
+    )
+
+    embed.set_footer(text="SAGO 데일리 브리핑 봇 · /등록 으로 시작하세요")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # ──────────────────── 설정 서브커맨드 그룹 ────────────────────
 
 settingsGroup = app_commands.Group(name="설정", description="봇 설정 변경")
+
+
+@settingsGroup.command(name="보기", description="현재 설정을 한눈에 확인합니다")
+async def cmd_settings_view(interaction: discord.Interaction):
+    # 사용자의 전체 설정을 대시보드 임베드로 표시
+    config = load_config()
+    userId = str(interaction.user.id)
+
+    if userId not in config.get("users", {}):
+        await interaction.response.send_message(
+            "❌ 먼저 `/등록`을 실행해주세요.", ephemeral=True
+        )
+        return
+
+    userConfig = config["users"][userId]
+    region = userConfig.get("region", "Seoul")
+    briefingTime = config.get("briefing_time", "07:00")
+    alertTime = _subtract_30min(briefingTime)
+    newsCategory = userConfig.get("newsCategory", "종합")
+    sections = _get_user_sections(userConfig)
+
+    # 영문 도시명 → 한글(영문) 표시 변환
+    korRegion = region
+    for kor, eng in REGIONS:
+        if eng == region:
+            korRegion = f"{kor} ({eng})"
+            break
+
+    embed = discord.Embed(
+        title="⚙️ 내 설정 대시보드",
+        color=0x3498DB,
+        timestamp=datetime.now(),
+    )
+
+    embed.add_field(name="📍 지역", value=korRegion, inline=True)
+    embed.add_field(
+        name="⏰ 브리핑 시간",
+        value=f"**{briefingTime}**\n알림: {alertTime}",
+        inline=True,
+    )
+    newsCatIcon = NEWS_CATEGORY_ICONS.get(newsCategory, "📰")
+    embed.add_field(
+        name=f"{newsCatIcon} 뉴스 카테고리",
+        value=newsCategory,
+        inline=True,
+    )
+
+    # 활성화된 브리핑 항목 표시
+    sectionLines = []
+    activeCount = 0
+    for key in ("weather", "dust", "news", "outfit", "quote"):
+        icon = SECTION_ICONS[key]
+        korName = SECTION_KOR_NAMES[key]
+        enabled = sections.get(key, True)
+        status = "✅" if enabled else "❌"
+        sectionLines.append(f"{status} {icon} {korName}")
+        if enabled:
+            activeCount += 1
+
+    embed.add_field(
+        name=f"📋 브리핑 항목 ({activeCount}/5 활성)",
+        value="\n".join(sectionLines),
+        inline=False,
+    )
+
+    embed.set_footer(text="💡 /설정 명령어로 변경할 수 있습니다")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @settingsGroup.command(name="시간", description="자동 브리핑 시간을 변경합니다 (전체 공통)")
