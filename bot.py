@@ -164,14 +164,16 @@ class RegionButton(discord.ui.Button):
             userId = str(interaction.user.id)
 
             if self.action == "register":
-                # 신규 등록 — 기본 설정 포함
+                # 신규 등록 — 사용자별 기본 설정 포함
+                defaultTime = config.get("briefing_time", "07:00")
                 config["users"][userId] = {
                     "region": self.engName,
                     "newsCategory": "종합",
                     "enabledSections": dict(DEFAULT_SECTIONS),
+                    "briefingTime": defaultTime,
                 }
                 save_config(config)
-                briefingTime = config.get("briefing_time", "07:00")
+                briefingTime = defaultTime
                 log.info("[등록] 새 사용자 등록 완료 (지역: %s)", self.engName)
 
                 # 등록 완료 임베드 표시
@@ -618,6 +620,34 @@ def _build_question_embed(text: str) -> discord.Embed:
     return embed
 
 
+def _build_alert_embed(alerts: list, region: str) -> discord.Embed:
+    # 날씨 경보 메시지를 임베드로 변환
+    korRegion = region
+    for kor, eng in REGIONS:
+        if eng == region:
+            korRegion = kor
+            break
+
+    embed = discord.Embed(
+        title="⚠️ 날씨 주의 알림",
+        description=f"📍 **{korRegion}** 지역 알림입니다.",
+        color=0xFF9800,
+        timestamp=datetime.now(),
+    )
+
+    # 경보 유형별 필드 분리
+    for alert in alerts:
+        if "미세먼지" in alert:
+            embed.add_field(name="미세먼지 경보", value=alert, inline=False)
+        elif "비 예보" in alert:
+            embed.add_field(name="강수 알림", value=alert, inline=False)
+        else:
+            embed.add_field(name="알림", value=alert, inline=False)
+
+    embed.set_footer(text="SAGO 날씨 알림 · 브리핑 30분 전 자동 발송")
+    return embed
+
+
 # ──────────────────── 애니메이션 헬퍼 ────────────────────
 
 async def _send_followup_split(interaction: discord.Interaction, content: str):
@@ -784,10 +814,12 @@ class DailyReportBot(discord.Client):
                 fallbackText += f"\n\n**{field.name}**\n{field.value}"
             await self._dm_send(user, fallbackText)
 
-    async def send_daily_report(self):
-        # 등록된 모든 사용자에게 각자 설정 기준으로 DM 브리핑 발송
+    async def send_daily_report(self, userIds=None):
+        # 대상 사용자에게 각자 설정 기준으로 DM 브리핑 발송 (userIds 미지정 시 전체)
         config = load_config()
         users  = config.get("users", {})
+        if userIds is not None:
+            users = {uid: users[uid] for uid in userIds if uid in users}
         if not users:
             log.info("[브리핑] 등록된 사용자가 없습니다.")
             return
@@ -844,10 +876,12 @@ class DailyReportBot(discord.Client):
 
         log.info("[브리핑] 전체 발송 결과 — 성공: %d, 실패: %d", successCount, failCount)
 
-    async def send_alerts(self):
-        # 비·미세먼지 조건 확인 후 조건 충족 사용자에게만 경보 DM 발송
+    async def send_alerts(self, userIds=None):
+        # 비·미세먼지 조건 확인 후 조건 충족 사용자에게만 경보 임베드 DM 발송
         config = load_config()
         users  = config.get("users", {})
+        if userIds is not None:
+            users = {uid: users[uid] for uid in userIds if uid in users}
 
         for userId, userConfig in users.items():
             region = userConfig.get("region", "Seoul")
@@ -857,8 +891,13 @@ class DailyReportBot(discord.Client):
                 if not alerts:
                     continue
                 targetUser = await self.fetch_user(int(userId))
-                alertMsg   = "⚠️ **날씨 주의 알림**\n\n" + "\n".join(alerts)
-                await self._dm_send(targetUser, alertMsg)
+                # 임베드로 알림 발송, 실패 시 텍스트 대체
+                try:
+                    alertEmbed = _build_alert_embed(alerts, region)
+                    await self._dm_send_embed(targetUser, alertEmbed)
+                except Exception:
+                    alertMsg = "⚠️ **날씨 주의 알림**\n\n" + "\n".join(alerts)
+                    await self._dm_send(targetUser, alertMsg)
                 log.info("[알림] 발송 완료 → %s (%s)", maskedId, region)
             except discord.NotFound:
                 log.warning("[알림] 사용자 %s 를 찾을 수 없음", maskedId)
@@ -1013,7 +1052,7 @@ async def cmd_help(interaction: discord.Interaction):
     embed.add_field(
         name="⚙️ 설정",
         value=(
-            "`/설정 시간 [HH:MM]` — 브리핑 시간 변경\n"
+            "`/설정 시간 [HH:MM]` — 내 브리핑 시간 변경\n"
             "`/설정 지역` — 날씨 조회 지역 변경\n"
             "`/설정 뉴스카테고리` — 뉴스 카테고리 선택\n"
             "`/설정 항목` — 브리핑 항목 on/off\n"
@@ -1055,7 +1094,8 @@ async def cmd_settings_view(interaction: discord.Interaction):
 
     userConfig = config["users"][userId]
     region = userConfig.get("region", "Seoul")
-    briefingTime = config.get("briefing_time", "07:00")
+    # 사용자별 브리핑 시간 조회 (미설정 시 전역 기본값 사용)
+    briefingTime = userConfig.get("briefingTime", config.get("briefing_time", "07:00"))
     alertTime = _subtract_30min(briefingTime)
     newsCategory = userConfig.get("newsCategory", "종합")
     sections = _get_user_sections(userConfig)
@@ -1108,7 +1148,7 @@ async def cmd_settings_view(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@settingsGroup.command(name="시간", description="자동 브리핑 시간을 변경합니다 (전체 공통)")
+@settingsGroup.command(name="시간", description="내 브리핑 시간을 변경합니다")
 @app_commands.describe(시간="HH:MM 형식으로 입력 (예: 08:30)")
 async def cmd_set_time(interaction: discord.Interaction, 시간: str):
     config = load_config()
@@ -1121,21 +1161,24 @@ async def cmd_set_time(interaction: discord.Interaction, 시간: str):
         )
         return
 
-    # 브리핑 시간 유효성 검사 후 전역 저장
+    # 브리핑 시간 유효성 검사 후 사용자별 저장
     try:
         hh, mm = 시간.split(":")
         if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
             raise ValueError
-        config["briefing_time"] = 시간
+        # 두 자리 포맷 정규화 (예: 8:5 → 08:05)
+        normalizedTime = f"{int(hh):02d}:{int(mm):02d}"
+        config["users"][userId]["briefingTime"] = normalizedTime
         save_config(config)
-        log.info("[설정] 브리핑 시간 변경 → %s", 시간)
+        log.info("[설정] 사용자 브리핑 시간 변경 → %s", normalizedTime)
         await interaction.response.send_message(
-            f"✅ 브리핑 시간이 **{시간}**으로 변경되었습니다.\n"
-            f"(날씨 알림은 브리핑 30분 전인 **{_subtract_30min(시간)}**에 발송됩니다.)"
+            f"✅ 브리핑 시간이 **{normalizedTime}**으로 변경되었습니다.\n"
+            f"(날씨 알림은 브리핑 30분 전인 **{_subtract_30min(normalizedTime)}**에 발송됩니다.)",
+            ephemeral=True,
         )
     except ValueError:
         await interaction.response.send_message(
-            "❌ 올바른 형식으로 입력해주세요. 예: `08:30`"
+            "❌ 올바른 형식으로 입력해주세요. 예: `08:30`", ephemeral=True
         )
 
 

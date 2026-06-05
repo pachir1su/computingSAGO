@@ -36,8 +36,8 @@ import asyncio
 import os
 import threading
 import time
+from datetime import datetime
 
-import schedule
 from dotenv import load_dotenv
 from logger import setup_logger
 
@@ -55,43 +55,51 @@ def _subtract_30min(timeStr: str) -> str:
 
 
 def run_scheduler(bot, loadConfigFn):
-    # 백그라운드 스레드 — config.json 변경을 감지해 스케줄 자동 갱신
-    currentBriefingTime = None
+    # 백그라운드 스레드 — 매분 사용자별 브리핑·알림 시간 도달 여부 확인
+    lastCheckedMinute = None
 
     while True:
         try:
-            config       = loadConfigFn()
-            briefingTime = config.get("briefing_time", "07:00")
-            alertTime    = _subtract_30min(briefingTime)
+            now = datetime.now()
+            currentMinute = now.strftime("%H:%M")
 
-            if briefingTime != currentBriefingTime:
-                # 시간 변경 감지 시 기존 스케줄 초기화 후 재등록
-                schedule.clear()
-                currentBriefingTime = briefingTime
+            # 분 단위 중복 실행 방지 — 같은 분에 두 번 체크하지 않음
+            if currentMinute != lastCheckedMinute:
+                lastCheckedMinute = currentMinute
+                config = loadConfigFn()
+                users = config.get("users", {})
+                defaultTime = config.get("briefing_time", "07:00")
 
-                def trigger_report():
-                    # 브리핑 코루틴을 Discord 이벤트 루프에 안전하게 제출
-                    if bot.loop and not bot.loop.is_closed():
-                        asyncio.run_coroutine_threadsafe(
-                            bot.send_daily_report(), bot.loop
-                        )
+                # 현재 시각과 일치하는 사용자를 브리핑/알림 그룹으로 분류
+                reportUserIds = []
+                alertUserIds = []
 
-                def trigger_alert():
-                    # 날씨 알림 코루틴을 Discord 이벤트 루프에 안전하게 제출
-                    if bot.loop and not bot.loop.is_closed():
-                        asyncio.run_coroutine_threadsafe(
-                            bot.send_alerts(), bot.loop
-                        )
+                for userId, userConfig in users.items():
+                    userTime = userConfig.get("briefingTime", defaultTime)
+                    userAlertTime = _subtract_30min(userTime)
 
-                schedule.every().day.at(briefingTime).do(trigger_report)
-                schedule.every().day.at(alertTime).do(trigger_alert)
-                log.info("[스케줄러] 알림: %s / 브리핑: %s", alertTime, briefingTime)
+                    if currentMinute == userTime:
+                        reportUserIds.append(userId)
+                    if currentMinute == userAlertTime:
+                        alertUserIds.append(userId)
 
-            schedule.run_pending()
+                # 해당 시간 사용자에게만 브리핑/알림 발송
+                if reportUserIds and bot.loop and not bot.loop.is_closed():
+                    asyncio.run_coroutine_threadsafe(
+                        bot.send_daily_report(userIds=reportUserIds), bot.loop
+                    )
+                    log.info("[스케줄러] 브리핑 발송 → %d명 (%s)", len(reportUserIds), currentMinute)
+
+                if alertUserIds and bot.loop and not bot.loop.is_closed():
+                    asyncio.run_coroutine_threadsafe(
+                        bot.send_alerts(userIds=alertUserIds), bot.loop
+                    )
+                    log.info("[스케줄러] 알림 발송 → %d명 (%s)", len(alertUserIds), currentMinute)
+
         except Exception as e:
             log.error("[스케줄러] 오류 발생: %s", e)
 
-        time.sleep(60)  # 1분 간격 폴링 (설정 변경 최대 1분 내 반영)
+        time.sleep(30)  # 30초 간격 폴링 (분 경계를 놓치지 않도록)
 
 
 if __name__ == "__main__":
